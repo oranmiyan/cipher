@@ -11,7 +11,7 @@ const MAGIC = new Uint8Array([82, 67, 76, 79, 78, 69, 0, 0]) // "RCLONE\x00\x00"
 const BLOCK_SIZE = 65536
 const BLOCK_OVERHEAD = 16 // poly1305 tag
 const NONCE_SIZE = 24
-const B32_ALPHABET = 'abcdefghijklmnopqrstuvwxyz234567'
+const B32_ALPHABET = '0123456789abcdefghijklmnopqrstuv'
 
 export async function deriveKeys(password, password2 = '') {
   const enc = new TextEncoder()
@@ -156,12 +156,13 @@ export function decryptFileContent(encryptedBuffer, dataKey) {
     const encBlock = data.slice(offset, offset + BLOCK_SIZE + BLOCK_OVERHEAD)
     offset += encBlock.length
 
-    // Derive block nonce: file nonce + little-endian block counter (last 8 bytes)
-    const blockNonce = fileNonce.slice()
-    let n = blockNum
-    for (let i = 16; i < 24; i++) {
-      blockNonce[i] ^= n & 0xff
-      n >>>= 8
+    // Derive block nonce: file nonce + blockNum as little-endian integer from byte 0
+    const blockNonce = new Uint8Array(fileNonce)
+    let carry = blockNum
+    for (let i = 0; i < 24 && carry > 0; i++) {
+      const sum = blockNonce[i] + carry
+      blockNonce[i] = sum & 0xff
+      carry = sum >>> 8
     }
 
     const pt = nacl.secretbox.open(encBlock, blockNonce, dataKey)
