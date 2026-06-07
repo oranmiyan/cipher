@@ -1,7 +1,6 @@
 import scrypt from 'scrypt-js'
 import nacl from 'tweetnacl'
 
-// Default rclone salt
 const DEFAULT_SALT = new Uint8Array([
   0xa8, 0x0d, 0xf4, 0x3a, 0x8f, 0xbd, 0x03, 0x08,
   0xa7, 0xca, 0xb8, 0x3e, 0x58, 0x1f, 0x86, 0xb1
@@ -9,8 +8,9 @@ const DEFAULT_SALT = new Uint8Array([
 
 const MAGIC = new Uint8Array([82, 67, 76, 79, 78, 69, 0, 0]) // "RCLONE\x00\x00"
 const BLOCK_SIZE = 65536
-const BLOCK_OVERHEAD = 16 // poly1305 tag
+const BLOCK_OVERHEAD = 16
 const NONCE_SIZE = 24
+// rclone uses extended-hex base32 (RFC 4648 §7), not standard base32
 const B32_ALPHABET = '0123456789abcdefghijklmnopqrstuv'
 
 export async function deriveKeys(password, password2 = '') {
@@ -24,7 +24,7 @@ export async function deriveKeys(password, password2 = '') {
   }
 }
 
-// GF(2^128) multiply by 2 (little-endian bytes)
+// GF(2^128) multiply-by-two, little-endian byte order (matches rfjakob/eme)
 function multByTwo(b) {
   const out = new Uint8Array(16)
   let carry = 0
@@ -37,24 +37,11 @@ function multByTwo(b) {
   return out
 }
 
-// AES-256 single-block encrypt using WebCrypto
+// AES-256 single-block encrypt. Uses AES-CBC with zero IV: first output block = AES-ECB.
 async function aesEncBlock(key, block) {
-  // WebCrypto AES-CBC with zero IV: first block = AES-ECB
   const k = await crypto.subtle.importKey('raw', key, { name: 'AES-CBC' }, false, ['encrypt'])
-  const iv = new Uint8Array(16)
-  const ct = await crypto.subtle.encrypt({ name: 'AES-CBC', iv }, k, block)
+  const ct = await crypto.subtle.encrypt({ name: 'AES-CBC', iv: new Uint8Array(16) }, k, block)
   return new Uint8Array(ct).slice(0, 16)
-}
-
-// Build L table for EME (16 entries)
-async function tabulateL(key) {
-  const L = []
-  let val = await aesEncBlock(key, new Uint8Array(16))
-  for (let i = 0; i < 16; i++) {
-    L.push(val)
-    val = multByTwo(val)
-  }
-  return L
 }
 
 function xor16(a, b) {
@@ -63,48 +50,45 @@ function xor16(a, b) {
   return out
 }
 
-// EME decrypt: nameKey=32 bytes, nameTweak=16 bytes, data=multiple of 16 bytes
+// EME decrypt as implemented by rfjakob/eme (used by rclone).
+// nameKey: 32 bytes, nameTweak (T): 16 bytes, data: multiple of 16 bytes.
+//
+// Pretransform:  PPP[j] = AES_K(data[j] XOR L[j])
+// Mixing:        MC     = AES_K(MP) XOR T   (decrypt direction: T applied after AES)
+//                M      = MP XOR MC
+// Posttransform: out[j] = AES_K(PPP[j] XOR M*2^j) XOR L[j]
 export async function emeDecrypt(nameKey, nameTweak, data) {
   const m = data.length / 16
   if (data.length % 16 !== 0) throw new Error('EME input not block-aligned')
-  const L = await tabulateL(nameKey)
 
-  // PPPj = AES_enc(Tj XOR Pj) for each block j
-  const T = new Array(m)
-  T[0] = nameTweak.slice(0, 16)
+  // Build L table: L[0] = AES_K(0^128), L[j] = 2*L[j-1] in GF(2^128)
+  const LTable = []
+  let Lcur = await aesEncBlock(nameKey, new Uint8Array(16))
+  LTable.push(Lcur)
   for (let j = 1; j < m; j++) {
-    T[j] = await aesEncBlock(nameKey, xor16(T[j - 1], L[0]))
+    Lcur = multByTwo(Lcur)
+    LTable.push(Lcur)
   }
 
-  // First pass: PPPj = AES(Tj XOR Pj)
+  // Pretransform
   const PPP = []
   for (let j = 0; j < m; j++) {
     const blk = data.slice(j * 16, j * 16 + 16)
-    PPP.push(await aesEncBlock(nameKey, xor16(T[j], blk)))
+    PPP.push(await aesEncBlock(nameKey, xor16(blk, LTable[j])))
   }
 
-  // MP = XOR of all PPP blocks
+  // Mixing (decrypt: XOR T after AES)
   let MP = new Uint8Array(16)
   for (const p of PPP) MP = xor16(MP, p)
+  const MC = xor16(await aesEncBlock(nameKey, MP), nameTweak)
+  let M = xor16(MP, MC)
 
-  // MC = AES_enc(MP)
-  const MC = await aesEncBlock(nameKey, MP)
-
-  // M = MC XOR MP
-  let M = xor16(MC, MP)
-
-  // CCCj = PPPj XOR (M * 2^j)
-  const CCC = []
-  for (let j = 0; j < m; j++) {
-    CCC.push(xor16(PPP[j], M))
-    M = multByTwo(M)
-  }
-
-  // Second pass: AES_enc(CCCj) XOR Tj => plaintext blocks
+  // Posttransform
   const out = new Uint8Array(data.length)
   for (let j = 0; j < m; j++) {
-    const pt = xor16(await aesEncBlock(nameKey, CCC[j]), T[j])
+    const pt = xor16(await aesEncBlock(nameKey, xor16(PPP[j], M)), LTable[j])
     out.set(pt, j * 16)
+    M = multByTwo(M)
   }
   return out
 }
@@ -126,16 +110,14 @@ export function base32Decode(str) {
 }
 
 export async function decryptFilename(encName, nameKey, nameTweak) {
-  // Each path segment is decoded independently
   const segments = encName.split('/')
   const decoded = []
   for (const seg of segments) {
     if (!seg) { decoded.push(seg); continue }
     const raw = base32Decode(seg)
     const pt = await emeDecrypt(nameKey, nameTweak, raw)
-    // PKCS7 unpad
     const pad = pt[pt.length - 1]
-    if (pad < 1 || pad > 16) throw new Error('Bad PKCS7 pad')
+    if (pad < 1 || pad > 16) throw new Error('Bad PKCS7 pad in filename')
     decoded.push(new TextDecoder().decode(pt.slice(0, pt.length - pad)))
   }
   return decoded.join('/')
@@ -143,9 +125,8 @@ export async function decryptFilename(encName, nameKey, nameTweak) {
 
 export function decryptFileContent(encryptedBuffer, dataKey) {
   const data = new Uint8Array(encryptedBuffer)
-  // Verify magic
   for (let i = 0; i < 8; i++) {
-    if (data[i] !== MAGIC[i]) throw new Error('Bad magic bytes — not an rclone crypt file')
+    if (data[i] !== MAGIC[i]) throw new Error('Bad magic - not an rclone crypt file')
   }
   const fileNonce = data.slice(8, 8 + NONCE_SIZE)
   const chunks = []
@@ -156,7 +137,7 @@ export function decryptFileContent(encryptedBuffer, dataKey) {
     const encBlock = data.slice(offset, offset + BLOCK_SIZE + BLOCK_OVERHEAD)
     offset += encBlock.length
 
-    // Derive block nonce: file nonce + blockNum as little-endian integer from byte 0
+    // Block nonce = file nonce + blockNum as little-endian integer (rclone nonce.increment())
     const blockNonce = new Uint8Array(fileNonce)
     let carry = blockNum
     for (let i = 0; i < 24 && carry > 0; i++) {
