@@ -37,11 +37,25 @@ function multByTwo(b) {
   return out
 }
 
-// AES-256 single-block encrypt. Uses AES-CBC with zero IV: first output block = AES-ECB.
+// AES-256 single-block encrypt via AES-CBC with zero IV (first output block = AES-ECB).
 async function aesEncBlock(key, block) {
   const k = await crypto.subtle.importKey('raw', key, { name: 'AES-CBC' }, false, ['encrypt'])
   const ct = await crypto.subtle.encrypt({ name: 'AES-CBC', iv: new Uint8Array(16) }, k, block)
   return new Uint8Array(ct).slice(0, 16)
+}
+
+// AES-256 single-block decrypt via 2-block AES-CBC trick.
+// Computes C2 = AES_enc(0x10*16 XOR block), then CBC-decrypts block||C2 with IV=0.
+// The second plaintext block is guaranteed to be 0x10*16 (full valid PKCS7),
+// so WebCrypto strips it and returns exactly 16 bytes = AES^-1(block).
+async function aesDecBlock(key, block) {
+  const pad = new Uint8Array(16).fill(0x10)
+  const c2 = await aesEncBlock(key, xor16(pad, block))
+  const input = new Uint8Array(32)
+  input.set(block, 0); input.set(c2, 16)
+  const k = await crypto.subtle.importKey('raw', key, { name: 'AES-CBC' }, false, ['decrypt'])
+  const pt = await crypto.subtle.decrypt({ name: 'AES-CBC', iv: new Uint8Array(16) }, k, input)
+  return new Uint8Array(pt)
 }
 
 function xor16(a, b) {
@@ -50,46 +64,46 @@ function xor16(a, b) {
   return out
 }
 
-// EME decrypt as implemented by rfjakob/eme (used by rclone).
+// EME decrypt — matches rfjakob/eme DirectionDecrypt exactly.
 // nameKey: 32 bytes, nameTweak (T): 16 bytes, data: multiple of 16 bytes.
-//
-// Pretransform:  PPP[j] = AES_K(data[j] XOR L[j])
-// Mixing:        MC     = AES_K(MP) XOR T   (decrypt direction: T applied after AES)
-//                M      = MP XOR MC
-// Posttransform: out[j] = AES_K(PPP[j] XOR M*2^j) XOR L[j]
 export async function emeDecrypt(nameKey, nameTweak, data) {
   const m = data.length / 16
   if (data.length % 16 !== 0) throw new Error('EME input not block-aligned')
 
-  // Build L table: L[0] = AES_K(0^128), L[j] = 2*L[j-1] in GF(2^128)
-  const LTable = []
-  let Lcur = await aesEncBlock(nameKey, new Uint8Array(16))
-  LTable.push(Lcur)
-  for (let j = 1; j < m; j++) {
-    Lcur = multByTwo(Lcur)
-    LTable.push(Lcur)
-  }
+  // L table: L[i] = 2^(i+1) * AES_K(0) — multiply BEFORE storing, so L[0] = 2*AES(0)
+  const L = []
+  let Li = await aesEncBlock(nameKey, new Uint8Array(16))
+  for (let i = 0; i < m; i++) { Li = multByTwo(Li); L.push(Li) }
 
-  // Pretransform
+  // Step 1: PPP[j] = AES_dec(data[j] XOR L[j])
   const PPP = []
-  for (let j = 0; j < m; j++) {
-    const blk = data.slice(j * 16, j * 16 + 16)
-    PPP.push(await aesEncBlock(nameKey, xor16(blk, LTable[j])))
-  }
+  for (let j = 0; j < m; j++)
+    PPP.push(await aesDecBlock(nameKey, xor16(data.slice(j * 16, j * 16 + 16), L[j])))
 
-  // Mixing (decrypt: XOR T after AES)
-  let MP = new Uint8Array(16)
+  // Step 2: MP = T XOR (XOR of all PPP[j])
+  let MP = new Uint8Array(nameTweak)
   for (const p of PPP) MP = xor16(MP, p)
-  const MC = xor16(await aesEncBlock(nameKey, MP), nameTweak)
+
+  // Step 3: MC = AES_dec(MP)
+  const MC = await aesDecBlock(nameKey, MP)
+
+  // Step 4: M = MP XOR MC
   let M = xor16(MP, MC)
 
-  // Posttransform
+  // Step 5: CCC[j] for j>=1
+  const CCC = new Array(m)
+  for (let j = 1; j < m; j++) { M = multByTwo(M); CCC[j] = xor16(PPP[j], M) }
+
+  // Step 6: CCC[0] = MC XOR T XOR (XOR of all CCC[j>=1])
+  let ccc0 = xor16(MC, nameTweak)
+  for (let j = 1; j < m; j++) ccc0 = xor16(ccc0, CCC[j])
+  CCC[0] = ccc0
+
+  // Step 7: out[j] = AES_dec(CCC[j]) XOR L[j]
   const out = new Uint8Array(data.length)
-  for (let j = 0; j < m; j++) {
-    const pt = xor16(await aesEncBlock(nameKey, xor16(PPP[j], M)), LTable[j])
-    out.set(pt, j * 16)
-    M = multByTwo(M)
-  }
+  for (let j = 0; j < m; j++)
+    out.set(xor16(await aesDecBlock(nameKey, CCC[j]), L[j]), j * 16)
+
   return out
 }
 
