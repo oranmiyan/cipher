@@ -83,6 +83,28 @@
 .field input::placeholder { color: #555; }
 .field input:focus { border-color: #0061fe; }
 
+.checkRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  color: #888;
+  cursor: pointer;
+  line-height: 1.4;
+}
+
+.checkRow input[type=checkbox] {
+  margin-top: 2px;
+  accent-color: #0061fe;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.checkHint {
+  color: #555;
+  font-size: 11px;
+}
+
 .error {
   background: rgba(220, 38, 38, 0.1);
   border: 1px solid rgba(220, 38, 38, 0.3);

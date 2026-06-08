@@ -123,6 +123,31 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
 
   useEffect(() => { load(prefix) }, [prefix, load])
 
+  // Auto-lock after 15 minutes of inactivity
+  useEffect(() => {
+    const IDLE_MS = 15 * 60 * 1000
+    let timer = setTimeout(onLogout, IDLE_MS)
+    const reset = () => { clearTimeout(timer); timer = setTimeout(onLogout, IDLE_MS) }
+    const events = ['mousemove', 'keydown', 'click', 'touchstart', 'scroll']
+    events.forEach(e => window.addEventListener(e, reset, { passive: true }))
+    return () => { clearTimeout(timer); events.forEach(e => window.removeEventListener(e, reset)) }
+  }, [onLogout])
+
+  // Lock after tab is hidden for 3 minutes (screen lock, app switch)
+  useEffect(() => {
+    let hiddenTimer = null
+    function onVisibility() {
+      if (document.hidden) {
+        hiddenTimer = setTimeout(onLogout, 3 * 60 * 1000)
+      } else {
+        clearTimeout(hiddenTimer)
+        hiddenTimer = null
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => { document.removeEventListener('visibilitychange', onVisibility); clearTimeout(hiddenTimer) }
+  }, [onLogout])
+
   useEffect(() => {
     function onKey(e) {
       if (e.key === 'Escape') {

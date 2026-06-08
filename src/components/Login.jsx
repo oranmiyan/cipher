@@ -1,16 +1,17 @@
 import { useState } from 'react'
 import styles from './Login.module.css'
 
-export default function Login({ onLogin, error }) {
-  const [keyId, setKeyId] = useState('')
-  const [appKey, setAppKey] = useState('')
+export default function Login({ onLogin, error, savedB2 }) {
+  const [keyId, setKeyId]       = useState(savedB2?.keyId  || '')
+  const [appKey, setAppKey]     = useState(savedB2?.appKey || '')
   const [password, setPassword] = useState('')
-  const [loading, setLoading] = useState(false)
+  const [rememberB2, setRememberB2] = useState(!!savedB2)
+  const [loading, setLoading]   = useState(false)
 
   async function submit(e) {
     e.preventDefault()
     setLoading(true)
-    await onLogin({ keyId: keyId.trim(), appKey: appKey.trim(), password })
+    await onLogin({ keyId: keyId.trim(), appKey: appKey.trim(), password, rememberB2 })
     setLoading(false)
   }
 
@@ -55,9 +56,20 @@ export default function Login({ onLogin, error }) {
               onChange={e => setPassword(e.target.value)}
               type="password"
               placeholder="••••••••"
+              autoComplete="current-password"
               required
             />
           </div>
+
+          <label className={styles.checkRow}>
+            <input
+              type="checkbox"
+              checked={rememberB2}
+              onChange={e => setRememberB2(e.target.checked)}
+            />
+            <span>Remember B2 credentials <span className={styles.checkHint}>(never stores your password)</span></span>
+          </label>
+
           {error && <p className={styles.error}>{error}</p>}
           <button type="submit" className={styles.btn} disabled={loading}>
             {loading
