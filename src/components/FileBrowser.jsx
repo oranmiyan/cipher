@@ -7,6 +7,7 @@ import AudioPlayer from './AudioPlayer'
 import VideoPlayer from './VideoPlayer'
 import ContextMenu from './ContextMenu'
 import DetailPanel from './DetailPanel'
+import VersionHistory from './VersionHistory'
 import styles from './FileBrowser.module.css'
 
 const FILTER_EXTS = {
@@ -75,6 +76,7 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
   const [preview, setPreview]           = useState(null)
   const [contextMenu, setContextMenu]   = useState(null)
   const [detailItem, setDetailItem]     = useState(null)
+  const [versionItem, setVersionItem]   = useState(null)
 
   // Persistent
   const [starred, setStarred]           = useLocalStorage('b2-browser.starred', [])
@@ -811,8 +813,18 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
           onStar={() => toggleStar(contextMenu.item)}
           onDetail={() => setDetailItem(contextMenu.item)}
           onRename={() => handleRename(contextMenu.item)}
+          onVersions={() => setVersionItem(contextMenu.item)}
           onDelete={() => handleDelete(contextMenu.item)}
           onSetColor={colorId => setFolderColors(prev => ({ ...prev, [contextMenu.item.encPrefix]: colorId }))}
+        />
+      )}
+
+      {/* ── Version history modal ── */}
+      {versionItem && (
+        <VersionHistory
+          item={versionItem}
+          onClose={() => setVersionItem(null)}
+          onRestored={() => load(prefix)}
         />
       )}
 

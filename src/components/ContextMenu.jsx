@@ -5,7 +5,7 @@ import styles from './ContextMenu.module.css'
 
 export default function ContextMenu({
   x, y, item, isStarred, folderColor,
-  onClose, onOpen, onDownload, onStar, onDetail, onRename, onDelete, onSetColor,
+  onClose, onOpen, onDownload, onStar, onDetail, onRename, onVersions, onDelete, onSetColor,
 }) {
   const ref = useRef(null)
 
@@ -55,6 +55,16 @@ export default function ContextMenu({
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
         Rename
       </button>
+
+      {!item.isFolder && (
+        <button className={styles.item} onClick={() => { onVersions(); onClose() }}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <polyline points="1 4 1 10 7 10"/>
+            <path d="M3.51 15a9 9 0 102.13-9.36L1 10"/>
+          </svg>
+          Version history
+        </button>
+      )}
 
       {item.isFolder && (
         <>

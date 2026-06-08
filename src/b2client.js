@@ -1,4 +1,8 @@
-import { S3Client, ListObjectsV2Command, GetObjectCommand, HeadObjectCommand, DeleteObjectCommand, PutObjectCommand, CopyObjectCommand } from '@aws-sdk/client-s3'
+import {
+  S3Client, ListObjectsV2Command, GetObjectCommand, HeadObjectCommand,
+  DeleteObjectCommand, PutObjectCommand, CopyObjectCommand,
+  ListObjectVersionsCommand, GetBucketVersioningCommand, PutBucketVersioningCommand,
+} from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 
 const BUCKET = 'moriah-backup'
@@ -94,6 +98,44 @@ export async function copyAndDelete(srcKey, dstKey) {
   })
   await getClient().send(copyCmd)
   await deleteObject(srcKey)
+}
+
+export async function getBucketVersioning() {
+  try {
+    const cmd = new GetBucketVersioningCommand({ Bucket: BUCKET })
+    const resp = await getClient().send(cmd)
+    return resp.Status === 'Enabled'
+  } catch {
+    return false
+  }
+}
+
+export async function enableBucketVersioning() {
+  const cmd = new PutBucketVersioningCommand({
+    Bucket: BUCKET,
+    VersioningConfiguration: { Status: 'Enabled' },
+  })
+  await getClient().send(cmd)
+}
+
+export async function listObjectVersions(key) {
+  const cmd = new ListObjectVersionsCommand({ Bucket: BUCKET, Prefix: key })
+  const resp = await getClient().send(cmd)
+  return (resp.Versions || []).filter(v => v.Key === key)
+}
+
+export async function restoreVersion(key, versionId) {
+  const cmd = new CopyObjectCommand({
+    Bucket: BUCKET,
+    CopySource: `${BUCKET}/${key}?versionId=${versionId}`,
+    Key: key,
+  })
+  await getClient().send(cmd)
+}
+
+export async function deleteVersion(key, versionId) {
+  const cmd = new DeleteObjectCommand({ Bucket: BUCKET, Key: key, VersionId: versionId })
+  await getClient().send(cmd)
 }
 
 export async function listAllObjects(prefix = '') {
