@@ -1,0 +1,129 @@
+.panel {
+  width: 272px;
+  flex-shrink: 0;
+  background: #242526;
+  border-left: 1px solid #3a3b3d;
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  position: sticky;
+  top: 0;
+  animation: slideIn 0.15s ease;
+}
+
+@keyframes slideIn {
+  from { transform: translateX(20px); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid #3a3b3d;
+  flex-shrink: 0;
+}
+
+.headerTitle {
+  font-size: 14px;
+  font-weight: 600;
+  color: #e0e0e0;
+}
+
+.closeBtn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #888;
+  padding: 4px;
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  transition: background 0.1s, color 0.1s;
+}
+.closeBtn svg { width: 16px; height: 16px; }
+.closeBtn:hover { background: #3a3b3d; color: #e0e0e0; }
+
+.body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+
+.thumb {
+  width: 80px;
+  height: 80px;
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.thumbIcon { font-size: 36px; }
+
+.name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e0e0e0;
+  text-align: center;
+  word-break: break-all;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.starBtn {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: #3a3b3d;
+  border: none;
+  border-radius: 8px;
+  color: #aaa;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 8px 14px;
+  transition: background 0.1s;
+  width: 100%;
+  justify-content: center;
+}
+.starBtn svg { width: 15px; height: 15px; flex-shrink: 0; }
+.starBtn:hover { background: #4a4b4d; }
+.starred { color: #eab308; }
+
+.rows {
+  width: 100%;
+  border: 1px solid #3a3b3d;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 10px 12px;
+  gap: 8px;
+  border-bottom: 1px solid #3a3b3d;
+}
+.row:last-child { border-bottom: none; }
+
+.rowLabel {
+  font-size: 12px;
+  color: #666;
+  flex-shrink: 0;
+  padding-top: 1px;
+}
+
+.rowValue {
+  font-size: 12px;
+  color: #bbb;
+  text-align: right;
+  word-break: break-all;
+  line-height: 1.4;
+}

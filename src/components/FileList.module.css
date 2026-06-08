@@ -23,10 +23,40 @@
   cursor: pointer;
   transition: border-color 0.15s, transform 0.12s;
   user-select: none;
+  position: relative;
 }
 
 .card:hover { border-color: #5a5b5d; transform: translateY(-2px); }
 .card:active { transform: translateY(0); }
+.cardSelected { border-color: #0061fe !important; background: #0d2340 !important; }
+
+/* Checkbox — hidden until hover or selected */
+.cardCheckbox {
+  position: absolute;
+  top: 7px;
+  left: 7px;
+  width: 16px;
+  height: 16px;
+  opacity: 0;
+  cursor: pointer;
+  z-index: 1;
+  accent-color: #0061fe;
+  transition: opacity 0.1s;
+  border-radius: 4px;
+}
+.card:hover .cardCheckbox,
+.cardSelected .cardCheckbox { opacity: 1; }
+
+/* Star badge */
+.cardStar {
+  position: absolute;
+  top: 6px;
+  right: 7px;
+  font-size: 13px;
+  color: #eab308;
+  z-index: 1;
+  pointer-events: none;
+}
 
 .cardThumb {
   height: 90px;
@@ -63,22 +93,51 @@
 .listItem {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 12px;
+  gap: 10px;
+  padding: 9px 12px;
   border-radius: 8px;
   cursor: pointer;
   transition: background 0.1s;
   user-select: none;
+  position: relative;
 }
 
 .listItem:hover { background: #2a2b2d; }
+.listSelected { background: #0d2340 !important; }
 
-.listIcon { font-size: 20px; flex-shrink: 0; width: 28px; text-align: center; }
+/* Checkbox — hidden until hover or selected */
+.checkbox {
+  width: 15px;
+  height: 15px;
+  opacity: 0;
+  cursor: pointer;
+  flex-shrink: 0;
+  accent-color: #0061fe;
+  transition: opacity 0.1s;
+}
+.listItem:hover .checkbox,
+.listSelected .checkbox { opacity: 1; }
+
+.colorDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.listIcon { font-size: 20px; flex-shrink: 0; width: 26px; text-align: center; }
 .listName { flex: 1; font-size: 14px; color: #e0e0e0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .listMeta { font-size: 12px; color: #666; flex-shrink: 0; }
 
+.starBadge {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  color: #eab308;
+}
+
 /* Shared */
-.busy { opacity: 0.45; pointer-events: none; }
+.busy { opacity: 0.4; pointer-events: none; }
 .empty { color: #555; padding: 60px 20px; text-align: center; font-size: 14px; }
 
 /* Mobile: 2-col grid */

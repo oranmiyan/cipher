@@ -1,29 +1,77 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { listPrefix, getObjectBytes } from '../b2client'
+import { listPrefix, getObjectBytes, deleteObject } from '../b2client'
 import { decryptFilename, decryptFileContent } from '../rclone-crypt'
+import { useLocalStorage } from '../hooks/useLocalStorage'
 import FileList from './FileList'
 import AudioPlayer from './AudioPlayer'
 import VideoPlayer from './VideoPlayer'
+import ContextMenu from './ContextMenu'
+import DetailPanel from './DetailPanel'
 import styles from './FileBrowser.module.css'
+
+const FILTER_EXTS = {
+  images:   ['png','jpg','jpeg','gif','webp','svg'],
+  videos:   ['mp4','mov','avi','mkv','webm','m4v'],
+  audio:    ['mp3','m4a','wav','flac','aac','ogg'],
+  docs:     ['pdf','doc','docx','xls','xlsx','ppt','pptx','txt','md','csv'],
+  archives: ['zip','gz','tar','7z','rar'],
+}
+const FILTERS      = ['all','folders','images','videos','audio','docs','archives']
+const SORT_FIELDS  = [{ field: 'name', label: 'Name' }, { field: 'size', label: 'Size' }, { field: 'date', label: 'Date' }]
+
+const itemId = item => item.isFolder ? item.encPrefix : item.key
+
+function sortItems(arr, { field, dir }) {
+  return [...arr].sort((a, b) => {
+    let va, vb
+    if (field === 'name') { va = a.label.toLowerCase(); vb = b.label.toLowerCase() }
+    if (field === 'size') { va = a.size || 0; vb = b.size || 0 }
+    if (field === 'date') { va = a.lastModified ? new Date(a.lastModified).getTime() : 0; vb = b.lastModified ? new Date(b.lastModified).getTime() : 0 }
+    if (va < vb) return dir === 'asc' ? -1 : 1
+    if (va > vb) return dir === 'asc' ? 1 : -1
+    return 0
+  })
+}
 
 export default function FileBrowser({ cryptKeys, onLogout }) {
   const { nameKey, nameTweak, dataKey } = cryptKeys
-  const [prefix, setPrefix] = useState('')
+
+  // Navigation
+  const [prefix, setPrefix]       = useState('')
   const [breadcrumb, setBreadcrumb] = useState([])
-  const [items, setItems] = useState(null)
-  const [error, setError] = useState('')
-  const [search, setSearch] = useState('')
-  const [preview, setPreview] = useState(null)
-  const [downloading, setDownloading] = useState('')
-  const [view, setView] = useState('grid')
-  const [activeNav, setActiveNav] = useState('home')
+  const [items, setItems]         = useState(null)
+  const [error, setError]         = useState('')
+  const [activeSection, setActiveSection] = useState('home')
+
+  // UI
+  const [search, setSearch]   = useState('')
+  const [view, setView]       = useState('grid')
+  const [sort, setSort]       = useState({ field: 'name', dir: 'asc' })
+  const [filter, setFilter]   = useState('all')
+
+  // Media
   const [audioTrack, setAudioTrack] = useState(null)
   const [videoTrack, setVideoTrack] = useState(null)
-  const searchRef = useRef(null)
+  const [downloading, setDownloading] = useState('')
+
+  // Selection & overlays
+  const [selected, setSelected]     = useState(new Set())
+  const [preview, setPreview]       = useState(null)
+  const [contextMenu, setContextMenu] = useState(null)
+  const [detailItem, setDetailItem] = useState(null)
+
+  // Persistent
+  const [starred, setStarred]           = useLocalStorage('b2-browser.starred', [])
+  const [recent, setRecent]             = useLocalStorage('b2-browser.recent', [])
+  const [folderColors, setFolderColors] = useLocalStorage('b2-browser.folderColors', {})
+
+  const searchRef  = useRef(null)
+  const starredIds = new Set(starred.map(i => itemId(i)))
 
   const load = useCallback(async (p) => {
     setItems(null)
     setError('')
+    setSelected(new Set())
     try {
       const { folders, files } = await listPrefix(p)
       const decFolders = await Promise.all(folders.map(async encPfx => {
@@ -46,59 +94,71 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
 
   useEffect(() => { load(prefix) }, [prefix, load])
 
+  useEffect(() => {
+    function onKey(e) {
+      if (e.key === 'Escape') {
+        setContextMenu(null)
+        setSelected(new Set())
+        setDetailItem(null)
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'a' && activeSection === 'home') {
+        e.preventDefault()
+        setSelected(new Set((items || []).map(itemId)))
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [items, activeSection])
+
   function navigate(folder) {
     setBreadcrumb(bc => [...bc, { label: folder.label, prefix: folder.encPrefix }])
     setPrefix(folder.encPrefix)
     setSearch('')
-    setActiveNav('home')
+    setFilter('all')
+    setActiveSection('home')
   }
 
   function goTo(idx) {
-    if (idx < 0) {
-      setBreadcrumb([])
-      setPrefix('')
-    } else {
-      const dest = breadcrumb[idx]
-      setBreadcrumb(bc => bc.slice(0, idx + 1))
-      setPrefix(dest.prefix)
-    }
+    const dest = breadcrumb[idx]
+    setBreadcrumb(bc => bc.slice(0, idx + 1))
+    setPrefix(dest.prefix)
     setSearch('')
+    setFilter('all')
   }
 
   function goHome() {
     setBreadcrumb([])
     setPrefix('')
     setSearch('')
-    setActiveNav('home')
+    setFilter('all')
+    setActiveSection('home')
   }
 
-  function closeAudio() {
-    if (audioTrack) URL.revokeObjectURL(audioTrack.url)
-    setAudioTrack(null)
-  }
-
-  function handleNavSearch() {
-    setActiveNav('search')
-    setTimeout(() => searchRef.current?.focus(), 50)
+  function addToRecent(item) {
+    setRecent(prev => {
+      const id = itemId(item)
+      const without = prev.filter(r => itemId(r) !== id)
+      return [{ ...item, openedAt: Date.now() }, ...without].slice(0, 20)
+    })
   }
 
   async function openFile(item) {
     if (item.isFolder) { navigate(item); return }
+    addToRecent(item)
     const name = item.label
-    const isVideo = /\.(mp4|m4v|mov)$/i.test(name)
-    if (isVideo) {
+    if (/\.(mp4|m4v|mov)$/i.test(name)) {
       setVideoTrack({ key: item.key, name, encSize: item.size })
       return
     }
     setDownloading(item.key)
     try {
-      const buf = await getObjectBytes(item.key)
+      const buf   = await getObjectBytes(item.key)
       const plain = decryptFileContent(buf, dataKey)
-      const blob = new Blob([plain])
-      const url = URL.createObjectURL(blob)
+      const blob  = new Blob([plain])
+      const url   = URL.createObjectURL(blob)
       const isImage = /\.(png|jpe?g|gif|webp|svg)$/i.test(name)
-      const isPdf = /\.pdf$/i.test(name)
-      const isText = /\.(txt|md|csv|json|log|xml|html?)$/i.test(name)
+      const isPdf   = /\.pdf$/i.test(name)
+      const isText  = /\.(txt|md|csv|json|log|xml|html?)$/i.test(name)
       const isAudio = /\.(mp3|m4a|wav|flac|aac|ogg)$/i.test(name)
       if (isImage || isPdf || isText) {
         setPreview({ url, name, blob, isImage, isPdf, isText })
@@ -117,14 +177,124 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
     }
   }
 
-  const allFiltered = (items || []).filter(i =>
-    !search || i.label.toLowerCase().includes(search.toLowerCase())
-  )
-  const folders = allFiltered.filter(i => i.isFolder)
-  const files = allFiltered.filter(i => !i.isFolder)
-  const currentTitle = breadcrumb.length > 0
-    ? breadcrumb[breadcrumb.length - 1].label
-    : 'Home'
+  async function downloadFile(item) {
+    if (item.isFolder) return
+    setDownloading(item.key)
+    try {
+      const buf   = await getObjectBytes(item.key)
+      const plain = decryptFileContent(buf, dataKey)
+      const blob  = new Blob([plain])
+      const url   = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url; a.download = item.label; a.click()
+      setTimeout(() => URL.revokeObjectURL(url), 5000)
+    } catch (e) {
+      setError('Failed to download: ' + e.message)
+    } finally {
+      setDownloading('')
+    }
+  }
+
+  function handleSelect(item) {
+    const id = itemId(item)
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function handleContextMenu(e, item) {
+    setContextMenu({ x: e.clientX, y: e.clientY, item })
+  }
+
+  function toggleStar(item) {
+    const id = itemId(item)
+    setStarred(prev => {
+      const has = prev.some(i => itemId(i) === id)
+      if (has) return prev.filter(i => itemId(i) !== id)
+      return [...prev, item]
+    })
+  }
+
+  async function handleDelete(item) {
+    if (item.isFolder) { setError('Folder deletion not yet supported.'); return }
+    if (!window.confirm(`Delete "${item.label}"? This cannot be undone.`)) return
+    try {
+      await deleteObject(item.key)
+      setItems(prev => prev ? prev.filter(i => i.key !== item.key) : prev)
+      setSelected(prev => { const n = new Set(prev); n.delete(item.key); return n })
+      if (detailItem && itemId(detailItem) === item.key) setDetailItem(null)
+    } catch (e) {
+      setError('Delete failed: ' + e.message)
+    }
+  }
+
+  async function bulkDownload() {
+    const toDownload = displayedAll.filter(i => !i.isFolder && selected.has(itemId(i)))
+    for (const item of toDownload) await downloadFile(item)
+  }
+
+  async function bulkDelete() {
+    const toDelete = displayedAll.filter(i => !i.isFolder && selected.has(itemId(i)))
+    if (!toDelete.length) return
+    if (!window.confirm(`Delete ${toDelete.length} file(s)? This cannot be undone.`)) return
+    for (const item of toDelete) {
+      try { await deleteObject(item.key) } catch {}
+    }
+    setItems(prev => prev ? prev.filter(i => !selected.has(itemId(i))) : prev)
+    setSelected(new Set())
+  }
+
+  function cycleSort(field) {
+    setSort(prev => {
+      if (prev.field !== field) return { field, dir: 'asc' }
+      return { field, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+    })
+  }
+
+  function closeAudio() {
+    if (audioTrack) URL.revokeObjectURL(audioTrack.url)
+    setAudioTrack(null)
+  }
+
+  // Compute display items
+  let displayItems = activeSection === 'starred'
+    ? starred
+    : activeSection === 'recent'
+      ? recent
+      : (items || [])
+
+  if (search) {
+    displayItems = displayItems.filter(i => i.label.toLowerCase().includes(search.toLowerCase()))
+  }
+
+  if ((activeSection === 'home' || activeSection === 'search') && filter !== 'all') {
+    if (filter === 'folders') {
+      displayItems = displayItems.filter(i => i.isFolder)
+    } else {
+      const exts = FILTER_EXTS[filter] || []
+      displayItems = displayItems.filter(i => {
+        if (i.isFolder) return false
+        return exts.includes(i.label.split('.').pop().toLowerCase())
+      })
+    }
+  }
+
+  const folders      = sortItems(displayItems.filter(i => i.isFolder), sort)
+  const files        = sortItems(displayItems.filter(i => !i.isFolder), sort)
+  const displayedAll = [...folders, ...files]
+
+  const currentTitle = activeSection === 'starred'
+    ? 'Starred'
+    : activeSection === 'recent'
+      ? 'Recent'
+      : breadcrumb.length > 0
+        ? breadcrumb[breadcrumb.length - 1].label
+        : 'Home'
+
+  const showControlBar = activeSection === 'home' || activeSection === 'search'
 
   return (
     <div className={styles.shell}>
@@ -140,7 +310,7 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
 
         <div className={styles.navGroup}>
           <button
-            className={styles.navItem + (activeNav === 'home' ? ' ' + styles.navActive : '')}
+            className={styles.navItem + (activeSection === 'home' ? ' ' + styles.navActive : '')}
             onClick={goHome}
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -150,8 +320,32 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
             Home
           </button>
           <button
-            className={styles.navItem + (activeNav === 'search' ? ' ' + styles.navActive : '')}
-            onClick={handleNavSearch}
+            className={styles.navItem + (activeSection === 'starred' ? ' ' + styles.navActive : '')}
+            onClick={() => { setActiveSection('starred'); setSearch('') }}
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill={activeSection === 'starred' ? '#eab308' : 'none'}
+              stroke={activeSection === 'starred' ? '#eab308' : 'currentColor'}
+              strokeWidth="2"
+            >
+              <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+            </svg>
+            Starred
+          </button>
+          <button
+            className={styles.navItem + (activeSection === 'recent' ? ' ' + styles.navActive : '')}
+            onClick={() => { setActiveSection('recent'); setSearch('') }}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="12" cy="12" r="10"/>
+              <polyline points="12 6 12 12 16 14"/>
+            </svg>
+            Recent
+          </button>
+          <button
+            className={styles.navItem + (activeSection === 'search' ? ' ' + styles.navActive : '')}
+            onClick={() => { setActiveSection('search'); setTimeout(() => searchRef.current?.focus(), 50) }}
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <circle cx="11" cy="11" r="8"/>
@@ -187,7 +381,7 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
               className={styles.searchInput}
               placeholder="Search files..."
               value={search}
-              onChange={e => { setSearch(e.target.value); setActiveNav('search') }}
+              onChange={e => { setSearch(e.target.value); if (e.target.value) setActiveSection('search') }}
             />
           </div>
           <div className={styles.avatar}>MO</div>
@@ -196,7 +390,8 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
         {/* Content */}
         <div className={styles.content}>
 
-          {breadcrumb.length > 0 && (
+          {/* Breadcrumb */}
+          {activeSection === 'home' && breadcrumb.length > 0 && (
             <nav className={styles.breadcrumb}>
               <button onClick={goHome}>Home</button>
               {breadcrumb.map((b, i) => (
@@ -210,13 +405,13 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
             </nav>
           )}
 
+          {/* Toolbar */}
           <div className={styles.toolbar}>
             <h2 className={styles.folderTitle}>{currentTitle}</h2>
             <div className={styles.viewToggle}>
               <button
                 className={styles.viewBtn + (view === 'grid' ? ' ' + styles.viewActive : '')}
-                onClick={() => setView('grid')}
-                title="Grid view"
+                onClick={() => setView('grid')} title="Grid view"
               >
                 <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2">
                   <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
@@ -225,8 +420,7 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
               </button>
               <button
                 className={styles.viewBtn + (view === 'list' ? ' ' + styles.viewActive : '')}
-                onClick={() => setView('list')}
-                title="List view"
+                onClick={() => setView('list')} title="List view"
               >
                 <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2">
                   <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/>
@@ -237,34 +431,82 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
             </div>
           </div>
 
+          {/* Control bar: filter chips + sort */}
+          {showControlBar && (
+            <div className={styles.controlBar}>
+              <div className={styles.filterChips}>
+                {FILTERS.map(f => (
+                  <button
+                    key={f}
+                    className={styles.chip + (filter === f ? ' ' + styles.chipActive : '')}
+                    onClick={() => setFilter(f)}
+                  >
+                    {f.charAt(0).toUpperCase() + f.slice(1)}
+                  </button>
+                ))}
+              </div>
+              <div className={styles.sortGroup}>
+                {SORT_FIELDS.map(({ field, label }) => (
+                  <button
+                    key={field}
+                    className={styles.sortBtn + (sort.field === field ? ' ' + styles.sortActive : '')}
+                    onClick={() => cycleSort(field)}
+                  >
+                    {label}
+                    {sort.field === field && (
+                      <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" strokeWidth="2.5">
+                        {sort.dir === 'asc'
+                          ? <polyline points="18 15 12 9 6 15"/>
+                          : <polyline points="6 9 12 15 18 9"/>}
+                      </svg>
+                    )}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Bulk action bar */}
+          {selected.size > 0 && (
+            <div className={styles.bulkBar}>
+              <span className={styles.bulkCount}>{selected.size} selected</span>
+              <button className={styles.bulkBtn} onClick={bulkDownload}>Download</button>
+              <button className={styles.bulkBtn + ' ' + styles.bulkDanger} onClick={bulkDelete}>Delete</button>
+              <button className={styles.bulkBtn} onClick={() => setSelected(new Set())}>Deselect all</button>
+            </div>
+          )}
+
           {error && <p className={styles.error}>{error}</p>}
 
-          {items === null && !error && (
+          {activeSection === 'home' && items === null && !error && (
             <div className={styles.loading}>
-              <span className={styles.spinner} />
+              <span className={styles.spinner}/>
               Loading...
             </div>
           )}
 
-          {items !== null && (
+          {(activeSection !== 'home' || items !== null) && (
             <FileList
               folders={folders}
               files={files}
               view={view}
               onOpen={openFile}
               downloading={downloading}
+              selected={selected}
+              onSelect={handleSelect}
+              onContextMenu={handleContextMenu}
+              starredIds={starredIds}
+              folderColors={folderColors}
             />
           )}
         </div>
 
-        {audioTrack && (
-          <AudioPlayer track={audioTrack} onClose={closeAudio} />
-        )}
+        {audioTrack && <AudioPlayer track={audioTrack} onClose={closeAudio} />}
 
         {/* Bottom nav — mobile only */}
         <nav className={styles.bottomNav}>
           <button
-            className={styles.bottomNavItem + (activeNav === 'home' ? ' ' + styles.bottomNavActive : '')}
+            className={styles.bottomNavItem + (activeSection === 'home' ? ' ' + styles.bottomNavActive : '')}
             onClick={goHome}
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -274,8 +516,17 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
             <span>Home</span>
           </button>
           <button
-            className={styles.bottomNavItem + (activeNav === 'search' ? ' ' + styles.bottomNavActive : '')}
-            onClick={handleNavSearch}
+            className={styles.bottomNavItem + (activeSection === 'starred' ? ' ' + styles.bottomNavActive : '')}
+            onClick={() => setActiveSection('starred')}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+            </svg>
+            <span>Starred</span>
+          </button>
+          <button
+            className={styles.bottomNavItem + (activeSection === 'search' ? ' ' + styles.bottomNavActive : '')}
+            onClick={() => { setActiveSection('search'); setTimeout(() => searchRef.current?.focus(), 50) }}
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <circle cx="11" cy="11" r="8"/>
@@ -293,7 +544,35 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
         </nav>
       </div>
 
-      {/* ── Video player overlay ── */}
+      {/* ── Detail panel ── */}
+      {detailItem && (
+        <DetailPanel
+          item={detailItem}
+          isStarred={starredIds.has(itemId(detailItem))}
+          onStar={() => toggleStar(detailItem)}
+          onClose={() => setDetailItem(null)}
+        />
+      )}
+
+      {/* ── Context menu ── */}
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          item={contextMenu.item}
+          isStarred={starredIds.has(itemId(contextMenu.item))}
+          folderColor={contextMenu.item.isFolder ? (folderColors[contextMenu.item.encPrefix] || null) : null}
+          onClose={() => setContextMenu(null)}
+          onOpen={() => openFile(contextMenu.item)}
+          onDownload={() => downloadFile(contextMenu.item)}
+          onStar={() => toggleStar(contextMenu.item)}
+          onDetail={() => setDetailItem(contextMenu.item)}
+          onDelete={() => handleDelete(contextMenu.item)}
+          onSetColor={colorId => setFolderColors(prev => ({ ...prev, [contextMenu.item.encPrefix]: colorId }))}
+        />
+      )}
+
+      {/* ── Video player ── */}
       {videoTrack && (
         <VideoPlayer
           track={videoTrack}
@@ -314,8 +593,8 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
               </div>
             </div>
             {preview.isImage && <img src={preview.url} alt={preview.name} className={styles.previewImg} />}
-            {preview.isPdf && <iframe src={preview.url} title={preview.name} className={styles.previewFrame} />}
-            {preview.isText && <TextViewer blob={preview.blob} />}
+            {preview.isPdf   && <iframe src={preview.url} title={preview.name} className={styles.previewFrame} />}
+            {preview.isText  && <TextViewer blob={preview.blob} />}
           </div>
         </div>
       )}
