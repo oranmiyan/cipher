@@ -8,8 +8,6 @@ import './App.css'
 // Stores only B2 key ID + app key — never the encryption password
 const B2_CREDS_KEY = 'b2browser_b2creds'
 
-// Filenames cached during a session — cleared on every logout
-const SESSION_KEYS = ['b2-browser.starred', 'b2-browser.recent', 'b2-browser.trash']
 
 function loadB2Creds() {
   try {
@@ -51,8 +49,6 @@ export default function App() {
   }
 
   const handleLogout = useCallback(() => {
-    // Clear decrypted filenames — they shouldn't persist past a session
-    SESSION_KEYS.forEach(k => localStorage.removeItem(k))
     setKeys(null)
   }, [])
 

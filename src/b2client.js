@@ -138,6 +138,15 @@ export async function deleteVersion(key, versionId) {
   await getClient().send(cmd)
 }
 
+// Like getObjectBytes but returns null instead of throwing on a missing key
+export async function getMetaObject(key) {
+  try {
+    return await getObjectBytes(key)
+  } catch {
+    return null
+  }
+}
+
 export async function listAllObjects(prefix = '') {
   const allFiles = []
   let continuationToken = undefined

@@ -235,6 +235,26 @@ export function encryptFileContent(plainBytes, dataKey) {
   return result
 }
 
+// Simple NaCl secretbox encryption for app metadata (starred, recent, trash).
+// Format: 24-byte random nonce | secretbox(JSON, nonce, dataKey)
+export function encryptMeta(obj, dataKey) {
+  const plain = new TextEncoder().encode(JSON.stringify(obj))
+  const nonce = nacl.randomBytes(24)
+  const cipher = nacl.secretbox(plain, nonce, dataKey)
+  const out = new Uint8Array(24 + cipher.length)
+  out.set(nonce, 0)
+  out.set(cipher, 24)
+  return out
+}
+
+export function decryptMeta(bytes, dataKey) {
+  const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
+  if (arr.length < 25) return null
+  const plain = nacl.secretbox.open(arr.slice(24), arr.slice(0, 24), dataKey)
+  if (!plain) return null
+  try { return JSON.parse(new TextDecoder().decode(plain)) } catch { return null }
+}
+
 export async function decryptFilename(encName, nameKey, nameTweak) {
   const segments = encName.split('/')
   const decoded = []

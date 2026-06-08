@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { listPrefix, listAllObjects, getObjectBytes, deleteObject, putObject, copyAndDelete } from '../b2client'
 import { decryptFilename, decryptFileContent, encryptFilename, encryptFileContent } from '../rclone-crypt'
-import { useLocalStorage } from '../hooks/useLocalStorage'
+import { useB2Storage } from '../hooks/useB2Storage'
 import FileList from './FileList'
 import AudioPlayer from './AudioPlayer'
 import VideoPlayer from './VideoPlayer'
@@ -78,11 +78,11 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
   const [detailItem, setDetailItem]     = useState(null)
   const [versionItem, setVersionItem]   = useState(null)
 
-  // Persistent
-  const [starred, setStarred]           = useLocalStorage('b2-browser.starred', [])
-  const [recent, setRecent]             = useLocalStorage('b2-browser.recent', [])
-  const [folderColors, setFolderColors] = useLocalStorage('b2-browser.folderColors', {})
-  const [trash, setTrash]               = useLocalStorage('b2-browser.trash', [])
+  // Persistent — stored as encrypted JSON files in B2 (survive cache clears, work across devices)
+  const [starred,      setStarred]      = useB2Storage('starred',      [], dataKey)
+  const [recent,       setRecent]       = useB2Storage('recent',       [], dataKey)
+  const [folderColors, setFolderColors] = useB2Storage('folderColors', {}, dataKey)
+  const [trash,        setTrash]        = useB2Storage('trash',        [], dataKey)
 
   // Global search index
   const [searchIndex, setSearchIndex]     = useState(null)
@@ -103,7 +103,7 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
     setSelected(new Set())
     try {
       const { folders, files } = await listPrefix(p)
-      const decFolders = await Promise.all(folders.map(async encPfx => {
+      const decFolders = await Promise.all(folders.filter(encPfx => encPfx !== '.b2browser/').map(async encPfx => {
         const rel = encPfx.slice(p.length).replace(/\/$/, '')
         let label = rel
         try { label = await decryptFilename(rel, nameKey, nameTweak) } catch {}
@@ -335,6 +335,7 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
       const index = []
       let done = 0
       for (const obj of allObjects) {
+        if (obj.key.startsWith('.b2browser/')) continue
         const parts = obj.key.split('/').filter(Boolean)
         const decParts = []
         for (const part of parts) {
