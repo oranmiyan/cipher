@@ -24,7 +24,7 @@ export default function Login({ onLogin, error, savedB2 }) {
             <path d="M7 11V7a5 5 0 0110 0v4"/>
           </svg>
         </div>
-        <h1 className={styles.title}>B2 Backup</h1>
+        <h1 className={styles.title}>Cipher</h1>
         <p className={styles.sub}>Connect to your encrypted Backblaze B2</p>
         <form onSubmit={submit} className={styles.form}>
           <div className={styles.field}>
