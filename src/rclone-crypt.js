@@ -148,6 +148,93 @@ export function base32Decode(str) {
   return new Uint8Array(out)
 }
 
+// EME encrypt — same structure as emeDecrypt but using aesEncBlock throughout
+export async function emeEncrypt(nameKey, nameTweak, data) {
+  const m = data.length / 16
+  if (data.length % 16 !== 0) throw new Error('EME input not block-aligned')
+
+  const L = []
+  let Li = await aesEncBlock(nameKey, new Uint8Array(16))
+  for (let i = 0; i < m; i++) { Li = multByTwo(Li); L.push(Li) }
+
+  const PPP = []
+  for (let j = 0; j < m; j++)
+    PPP.push(await aesEncBlock(nameKey, xor16(data.slice(j * 16, j * 16 + 16), L[j])))
+
+  let MP = new Uint8Array(nameTweak)
+  for (const p of PPP) MP = xor16(MP, p)
+
+  const MC = await aesEncBlock(nameKey, MP)
+  let M = xor16(MP, MC)
+
+  const CCC = new Array(m)
+  for (let j = 1; j < m; j++) { M = multByTwo(M); CCC[j] = xor16(PPP[j], M) }
+
+  let ccc0 = xor16(MC, nameTweak)
+  for (let j = 1; j < m; j++) ccc0 = xor16(ccc0, CCC[j])
+  CCC[0] = ccc0
+
+  const out = new Uint8Array(data.length)
+  for (let j = 0; j < m; j++)
+    out.set(xor16(await aesEncBlock(nameKey, CCC[j]), L[j]), j * 16)
+
+  return out
+}
+
+export function base32Encode(data) {
+  let bits = 0, val = 0, out = ''
+  for (const byte of data) {
+    val = (val << 8) | byte
+    bits += 8
+    while (bits >= 5) { bits -= 5; out += B32_ALPHABET[(val >>> bits) & 31] }
+  }
+  if (bits > 0) out += B32_ALPHABET[(val << (5 - bits)) & 31]
+  return out
+}
+
+export async function encryptFilename(name, nameKey, nameTweak) {
+  const nameBytes = new TextEncoder().encode(name)
+  const padLen = 16 - (nameBytes.length % 16)
+  const padded = new Uint8Array(nameBytes.length + padLen)
+  padded.set(nameBytes)
+  padded.fill(padLen, nameBytes.length)
+  const encrypted = await emeEncrypt(nameKey, nameTweak, padded)
+  return base32Encode(encrypted)
+}
+
+export function encryptFileContent(plainBytes, dataKey) {
+  if (!(plainBytes instanceof Uint8Array)) plainBytes = new Uint8Array(plainBytes)
+  const fileNonce = nacl.randomBytes(24)
+  const header = new Uint8Array(32)
+  header.set(MAGIC, 0)
+  header.set(fileNonce, 8)
+
+  const chunks = [header]
+  let offset = 0, blockNum = 0
+
+  while (offset <= plainBytes.length) {
+    if (offset === plainBytes.length && blockNum > 0) break
+    const block = plainBytes.slice(offset, offset + BLOCK_SIZE)
+    if (block.length === 0) break
+    const blockNonce = new Uint8Array(fileNonce)
+    let carry = blockNum
+    for (let i = 0; i < 24 && carry > 0; i++) {
+      const sum = blockNonce[i] + carry
+      blockNonce[i] = sum & 0xff
+      carry = sum >>> 8
+    }
+    chunks.push(nacl.secretbox(block, blockNonce, dataKey))
+    offset += block.length
+    blockNum++
+  }
+
+  const total = chunks.reduce((s, c) => s + c.length, 0)
+  const result = new Uint8Array(total)
+  let pos = 0
+  for (const c of chunks) { result.set(c, pos); pos += c.length }
+  return result
+}
+
 export async function decryptFilename(encName, nameKey, nameTweak) {
   const segments = encName.split('/')
   const decoded = []

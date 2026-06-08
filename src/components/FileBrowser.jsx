@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { listPrefix, listAllObjects, getObjectBytes, deleteObject } from '../b2client'
-import { decryptFilename, decryptFileContent } from '../rclone-crypt'
+import { listPrefix, listAllObjects, getObjectBytes, deleteObject, putObject, copyAndDelete } from '../b2client'
+import { decryptFilename, decryptFileContent, encryptFilename, encryptFileContent } from '../rclone-crypt'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import FileList from './FileList'
 import AudioPlayer from './AudioPlayer'
@@ -87,7 +87,11 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
   const [searchIndexing, setSearchIndexing] = useState(false)
   const [indexProgress, setIndexProgress]   = useState(0)
 
+  // Upload state
+  const [uploads, setUploads] = useState([])  // [{ name, status }]
+
   const searchRef  = useRef(null)
+  const uploadRef  = useRef(null)
   const starredIds = new Set(starred.map(i => itemId(i)))
   const trashIds   = new Set(trash.map(i => itemId(i)))
 
@@ -326,6 +330,54 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
     }
   }
 
+  async function handleUpload(fileList) {
+    const files = Array.from(fileList)
+    for (const file of files) {
+      setUploads(prev => [...prev, { name: file.name, status: 'encrypting' }])
+      try {
+        const buf = await file.arrayBuffer()
+        const plain = new Uint8Array(buf)
+        const enc = encryptFileContent(plain, dataKey)
+        setUploads(prev => prev.map(u => u.name === file.name ? { ...u, status: 'uploading' } : u))
+        const encName = await encryptFilename(file.name, nameKey, nameTweak)
+        const key = prefix + encName
+        await putObject(key, enc)
+        const newItem = {
+          key,
+          label: file.name,
+          size: file.size,
+          lastModified: new Date(),
+          isFolder: false,
+        }
+        setItems(prev => prev ? [...prev, newItem] : [newItem])
+        setUploads(prev => prev.filter(u => u.name !== file.name))
+      } catch (e) {
+        setUploads(prev => prev.map(u => u.name === file.name ? { ...u, status: 'error: ' + e.message } : u))
+        setTimeout(() => setUploads(prev => prev.filter(u => u.name !== file.name)), 4000)
+      }
+    }
+  }
+
+  async function handleRename(item) {
+    const newName = window.prompt('Rename to:', item.label)
+    if (!newName || newName === item.label) return
+    try {
+      const encName = await encryptFilename(newName, nameKey, nameTweak)
+      const parentPrefix = item.key.includes('/')
+        ? item.key.slice(0, item.key.lastIndexOf('/') + 1)
+        : ''
+      const newKey = parentPrefix + encName
+      await copyAndDelete(item.key, newKey)
+      setItems(prev => prev
+        ? prev.map(i => i.key === item.key ? { ...i, key: newKey, label: newName } : i)
+        : prev
+      )
+      if (detailItem && detailItem.key === item.key) setDetailItem({ ...detailItem, key: newKey, label: newName })
+    } catch (e) {
+      setError('Rename failed: ' + e.message)
+    }
+  }
+
   function cycleSort(field) {
     setSort(prev => {
       if (prev.field !== field) return { field, dir: 'asc' }
@@ -525,6 +577,25 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
                 Empty trash
               </button>
             )}
+            {activeSection === 'home' && (
+              <>
+                <input
+                  ref={uploadRef}
+                  type="file"
+                  multiple
+                  style={{ display: 'none' }}
+                  onChange={e => { handleUpload(e.target.files); e.target.value = '' }}
+                />
+                <button className={styles.uploadBtn} onClick={() => uploadRef.current?.click()}>
+                  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                    <polyline points="17 8 12 3 7 8"/>
+                    <line x1="12" y1="3" x2="12" y2="15"/>
+                  </svg>
+                  Upload
+                </button>
+              </>
+            )}
             {activeSection !== 'trash' && (
               <div className={styles.viewToggle}>
                 <button
@@ -619,6 +690,21 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
               <button className={styles.bulkBtn} onClick={bulkDownload}>Download</button>
               <button className={styles.bulkBtn + ' ' + styles.bulkDanger} onClick={bulkDelete}>Move to trash</button>
               <button className={styles.bulkBtn} onClick={() => setSelected(new Set())}>Deselect all</button>
+            </div>
+          )}
+
+          {/* Upload progress */}
+          {uploads.length > 0 && (
+            <div className={styles.uploadList}>
+              {uploads.map(u => (
+                <div key={u.name} className={styles.uploadItem}>
+                  <span className={styles.uploadName}>{u.name}</span>
+                  <span className={styles.uploadStatus}>{u.status}</span>
+                  {(u.status === 'encrypting' || u.status === 'uploading') && (
+                    <span className={styles.spinner} style={{ width: 12, height: 12 }} />
+                  )}
+                </div>
+              ))}
             </div>
           )}
 
@@ -724,6 +810,7 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
           onDownload={() => downloadFile(contextMenu.item)}
           onStar={() => toggleStar(contextMenu.item)}
           onDetail={() => setDetailItem(contextMenu.item)}
+          onRename={() => handleRename(contextMenu.item)}
           onDelete={() => handleDelete(contextMenu.item)}
           onSetColor={colorId => setFolderColors(prev => ({ ...prev, [contextMenu.item.encPrefix]: colorId }))}
         />

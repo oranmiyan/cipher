@@ -496,6 +496,58 @@
 .indexBtn:hover { background: #4a4b4d; }
 .indexBtn:disabled { opacity: 0.5; cursor: default; }
 
+/* ── Upload button ── */
+.uploadBtn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  background: #0061fe;
+  border: none;
+  border-radius: 8px;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.1s;
+  flex-shrink: 0;
+  margin-right: 8px;
+}
+.uploadBtn:hover { background: #0051d4; }
+
+/* ── Upload progress list ── */
+.uploadList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.uploadItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  background: #1a3a5c;
+  border: 1px solid rgba(0, 97, 254, 0.3);
+  border-radius: 8px;
+}
+
+.uploadName {
+  flex: 1;
+  font-size: 13px;
+  color: #a0c4ff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.uploadStatus {
+  font-size: 11px;
+  color: #6fa8ff;
+  flex-shrink: 0;
+}
+
 /* ── Mobile ── */
 @media (max-width: 640px) {
   .sidebar { display: none; }

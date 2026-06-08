@@ -1,4 +1,4 @@
-import { S3Client, ListObjectsV2Command, GetObjectCommand, HeadObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3'
+import { S3Client, ListObjectsV2Command, GetObjectCommand, HeadObjectCommand, DeleteObjectCommand, PutObjectCommand, CopyObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 
 const BUCKET = 'moriah-backup'
@@ -79,6 +79,21 @@ export async function presignGet(key, expiresIn = 3600) {
 export async function deleteObject(key) {
   const cmd = new DeleteObjectCommand({ Bucket: BUCKET, Key: key })
   await getClient().send(cmd)
+}
+
+export async function putObject(key, data) {
+  const cmd = new PutObjectCommand({ Bucket: BUCKET, Key: key, Body: data })
+  await getClient().send(cmd)
+}
+
+export async function copyAndDelete(srcKey, dstKey) {
+  const copyCmd = new CopyObjectCommand({
+    Bucket: BUCKET,
+    CopySource: encodeURIComponent(`${BUCKET}/${srcKey}`),
+    Key: dstKey,
+  })
+  await getClient().send(copyCmd)
+  await deleteObject(srcKey)
 }
 
 export async function listAllObjects(prefix = '') {
