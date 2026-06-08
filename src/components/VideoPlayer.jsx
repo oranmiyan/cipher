@@ -76,26 +76,28 @@ export default function VideoPlayer({ track, dataKey, onClose }) {
             return
           }
 
-          for (const t of allTracks) {
-            const isVid = (info.videoTracks || []).some(v => v.id === t.id)
-            const mime  = `${isVid ? 'video' : 'audio'}/mp4; codecs="${t.codec}"`
-            if (!MediaSource.isTypeSupported(mime)) continue
+          // Use ONE SourceBuffer with a combined codec string so the single
+          // shared init segment (mp4box v2.x) is accepted cleanly.
+          const codecs = allTracks.map(t => t.codec).filter(Boolean).join(', ')
+          const mime   = `video/mp4; codecs="${codecs}"`
 
-            const sb = ms.addSourceBuffer(mime)
-            const q  = makeQueue(sb)
-            queues.set(t.id, q)
-            mp4.setSegmentOptions(t.id, q, { nbSamples: 200 })
-          }
-
-          if (!queues.size) {
+          if (!MediaSource.isTypeSupported(mime)) {
             setError('Video format not supported on this device')
             setStatus('error')
             return
           }
 
-          // mp4box v2.x returns { tracks, buffer } (single shared init segment)
+          const sb = ms.addSourceBuffer(mime)
+          const q  = makeQueue(sb)
+
+          for (const t of allTracks) {
+            queues.set(t.id, q)
+            mp4.setSegmentOptions(t.id, q, { nbSamples: 200 })
+          }
+
+          // mp4box v2.x: one shared init segment for all tracks
           const initSeg = mp4.initializeSegmentation()
-          for (const track of initSeg.tracks) track.user?.push(initSeg.buffer)
+          q.push(initSeg.buffer)
           mp4.start()
           setStatus('playing')
         }
