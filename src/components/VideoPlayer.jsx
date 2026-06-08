@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import * as MP4Box from 'mp4box'
+import * as MP4Box from '../vendor/mp4box.js'
 import { getObjectRange } from '../b2client'
 import { parseFileHeader, decryptBlock, HEADER_SIZE, ENC_BLOCK_SIZE } from '../rclone-crypt'
 import styles from './VideoPlayer.module.css'

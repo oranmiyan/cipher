@@ -1,19 +1,9 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
-import { fileURLToPath } from 'url'
-import { resolve, dirname } from 'path'
-
-const __filename = fileURLToPath(import.meta.url)
-const __dirname = dirname(__filename)
 
 export default defineConfig({
   base: '/b2-browser/',
-  resolve: {
-    alias: {
-      'mp4box': resolve(__dirname, 'node_modules/mp4box/dist/mp4box.all.js')
-    }
-  },
   plugins: [
     react(),
     VitePWA({
