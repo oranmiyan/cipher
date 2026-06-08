@@ -28,8 +28,9 @@ function loadB2Creds() {
 }
 
 export default function App() {
-  const [keys, setKeys]   = useState(null)
-  const [error, setError] = useState('')
+  const [keys, setKeys]     = useState(null)
+  const [keyId, setKeyId]   = useState('')
+  const [error, setError]   = useState('')
   const savedB2 = loadB2Creds()
 
   async function handleLogin({ keyId, appKey, password, rememberB2 }) {
@@ -42,6 +43,7 @@ export default function App() {
       } else {
         localStorage.removeItem(B2_CREDS_KEY)
       }
+      setKeyId(keyId)
       setKeys(k)
     } catch (e) {
       setError(e.message)
@@ -50,8 +52,16 @@ export default function App() {
 
   const handleLogout = useCallback(() => {
     setKeys(null)
+    setKeyId('')
+  }, [])
+
+  // Sign out AND wipe saved B2 credentials from localStorage
+  const handleSignOutForget = useCallback(() => {
+    localStorage.removeItem(B2_CREDS_KEY)
+    setKeys(null)
+    setKeyId('')
   }, [])
 
   if (!keys) return <Login savedB2={savedB2} onLogin={handleLogin} error={error} />
-  return <FileBrowser cryptKeys={keys} onLogout={handleLogout} />
+  return <FileBrowser cryptKeys={keys} keyId={keyId} onLogout={handleLogout} onSignOutForget={handleSignOutForget} />
 }

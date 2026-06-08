@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { listPrefix, listAllObjects, getObjectBytes, deleteObject, putObject, copyAndDelete } from '../b2client'
 import { decryptFilename, decryptFileContent, encryptFilename, encryptFileContent } from '../rclone-crypt'
 import { useB2Storage } from '../hooks/useB2Storage'
+import AvatarMenu from './AvatarMenu'
 import FileList from './FileList'
 import AudioPlayer from './AudioPlayer'
 import VideoPlayer from './VideoPlayer'
@@ -50,7 +51,7 @@ function fmtDate(d) {
   })
 }
 
-export default function FileBrowser({ cryptKeys, onLogout }) {
+export default function FileBrowser({ cryptKeys, keyId, onLogout, onSignOutForget }) {
   const { nameKey, nameTweak, dataKey } = cryptKeys
 
   // Navigation
@@ -62,9 +63,15 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
 
   // UI
   const [search, setSearch]   = useState('')
-  const [view, setView]       = useState('grid')
   const [sort, setSort]       = useState({ field: 'name', dir: 'asc' })
   const [filter, setFilter]   = useState('all')
+
+  // Persisted preferences (view + idle timeout) — stored in B2
+  const [prefs, setPrefs] = useB2Storage('prefs', { defaultView: 'grid', idleMinutes: 15 }, dataKey)
+  const view        = prefs.defaultView || 'grid'
+  const idleMinutes = prefs.idleMinutes ?? 15
+  const setView     = val => setPrefs(p => ({ ...p, defaultView: val }))
+  const setIdleMinutes = val => setPrefs(p => ({ ...p, idleMinutes: val }))
 
   // Media
   const [audioTrack, setAudioTrack]   = useState(null)
@@ -123,15 +130,16 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
 
   useEffect(() => { load(prefix) }, [prefix, load])
 
-  // Auto-lock after 15 minutes of inactivity
+  // Auto-lock after idle (configurable, 0 = never)
   useEffect(() => {
-    const IDLE_MS = 15 * 60 * 1000
+    if (!idleMinutes) return
+    const IDLE_MS = idleMinutes * 60 * 1000
     let timer = setTimeout(onLogout, IDLE_MS)
     const reset = () => { clearTimeout(timer); timer = setTimeout(onLogout, IDLE_MS) }
     const events = ['mousemove', 'keydown', 'click', 'touchstart', 'scroll']
     events.forEach(e => window.addEventListener(e, reset, { passive: true }))
     return () => { clearTimeout(timer); events.forEach(e => window.removeEventListener(e, reset)) }
-  }, [onLogout])
+  }, [onLogout, idleMinutes])
 
   // Lock after tab is hidden for 3 minutes (screen lock, app switch)
   useEffect(() => {
@@ -406,6 +414,13 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
     }
   }
 
+  function handleClearMeta() {
+    setStarred([])
+    setRecent([])
+    setTrash([])
+    setFolderColors({})
+  }
+
   function cycleSort(field) {
     setSort(prev => {
       if (prev.field !== field) return { field, dir: 'asc' }
@@ -576,7 +591,16 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
               onChange={e => { setSearch(e.target.value); if (e.target.value) setActiveSection('search') }}
             />
           </div>
-          <div className={styles.avatar}>MO</div>
+          <AvatarMenu
+            keyId={keyId}
+            idleMinutes={idleMinutes}
+            onIdleChange={setIdleMinutes}
+            view={view}
+            onViewChange={setView}
+            onLock={onLogout}
+            onSignOutForget={onSignOutForget}
+            onClearMeta={handleClearMeta}
+          />
         </div>
 
         {/* Content */}
