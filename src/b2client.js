@@ -55,6 +55,22 @@ export async function getObjectBytes(key) {
   return out.buffer
 }
 
+export async function getObjectRange(key, startByte, endByte) {
+  const cmd = new GetObjectCommand({
+    Bucket: BUCKET,
+    Key: key,
+    Range: `bytes=${startByte}-${endByte}`
+  })
+  const resp = await getClient().send(cmd)
+  const chunks = []
+  for await (const chunk of resp.Body) chunks.push(chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk))
+  const total = chunks.reduce((s, c) => s + c.length, 0)
+  const out = new Uint8Array(total)
+  let pos = 0
+  for (const c of chunks) { out.set(c, pos); pos += c.length }
+  return out
+}
+
 export async function presignGet(key, expiresIn = 3600) {
   const cmd = new GetObjectCommand({ Bucket: BUCKET, Key: key })
   return getSignedUrl(getClient(), cmd, { expiresIn })

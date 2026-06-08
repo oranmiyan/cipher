@@ -10,6 +10,31 @@ const MAGIC = new Uint8Array([82, 67, 76, 79, 78, 69, 0, 0]) // "RCLONE\x00\x00"
 const BLOCK_SIZE = 65536
 const BLOCK_OVERHEAD = 16
 const NONCE_SIZE = 24
+
+export const HEADER_SIZE = 32        // 8 magic + 24 nonce
+export const ENC_BLOCK_SIZE = 65552  // 65536 data + 16 Poly1305 tag
+export const PLAIN_BLOCK_SIZE = 65536
+
+export function parseFileHeader(buffer) {
+  const data = new Uint8Array(buffer)
+  for (let i = 0; i < 8; i++) {
+    if (data[i] !== MAGIC[i]) throw new Error('Bad magic - not an rclone crypt file')
+  }
+  return data.slice(8, 32) // nonce
+}
+
+export function decryptBlock(encBlock, fileNonce, blockNum, dataKey) {
+  const blockNonce = new Uint8Array(fileNonce)
+  let carry = blockNum
+  for (let i = 0; i < 24 && carry > 0; i++) {
+    const sum = blockNonce[i] + carry
+    blockNonce[i] = sum & 0xff
+    carry = sum >>> 8
+  }
+  const pt = nacl.secretbox.open(encBlock, blockNonce, dataKey)
+  if (!pt) throw new Error(`Decryption failed on block ${blockNum}`)
+  return pt
+}
 // rclone uses extended-hex base32 (RFC 4648 §7), not standard base32
 const B32_ALPHABET = '0123456789abcdefghijklmnopqrstuv'
 

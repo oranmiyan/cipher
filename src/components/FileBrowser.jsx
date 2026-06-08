@@ -3,6 +3,7 @@ import { listPrefix, getObjectBytes } from '../b2client'
 import { decryptFilename, decryptFileContent } from '../rclone-crypt'
 import FileList from './FileList'
 import AudioPlayer from './AudioPlayer'
+import VideoPlayer from './VideoPlayer'
 import styles from './FileBrowser.module.css'
 
 export default function FileBrowser({ cryptKeys, onLogout }) {
@@ -17,6 +18,7 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
   const [view, setView] = useState('grid')
   const [activeNav, setActiveNav] = useState('home')
   const [audioTrack, setAudioTrack] = useState(null)
+  const [videoTrack, setVideoTrack] = useState(null)
   const searchRef = useRef(null)
 
   const load = useCallback(async (p) => {
@@ -82,13 +84,18 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
 
   async function openFile(item) {
     if (item.isFolder) { navigate(item); return }
+    const name = item.label
+    const isVideo = /\.(mp4|m4v|mov)$/i.test(name)
+    if (isVideo) {
+      setVideoTrack({ key: item.key, name, encSize: item.size })
+      return
+    }
     setDownloading(item.key)
     try {
       const buf = await getObjectBytes(item.key)
       const plain = decryptFileContent(buf, dataKey)
       const blob = new Blob([plain])
       const url = URL.createObjectURL(blob)
-      const name = item.label
       const isImage = /\.(png|jpe?g|gif|webp|svg)$/i.test(name)
       const isPdf = /\.pdf$/i.test(name)
       const isText = /\.(txt|md|csv|json|log|xml|html?)$/i.test(name)
@@ -285,6 +292,15 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
           </button>
         </nav>
       </div>
+
+      {/* ── Video player overlay ── */}
+      {videoTrack && (
+        <VideoPlayer
+          track={videoTrack}
+          dataKey={dataKey}
+          onClose={() => setVideoTrack(null)}
+        />
+      )}
 
       {/* ── Preview overlay ── */}
       {preview && (
