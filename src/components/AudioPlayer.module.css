@@ -1,0 +1,140 @@
+.player {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 20px;
+  height: 68px;
+  background: #242526;
+  border-top: 1px solid #3a3b3d;
+  flex-shrink: 0;
+}
+
+/* Track info */
+.trackInfo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+
+.trackIcon { font-size: 18px; flex-shrink: 0; }
+
+.trackName {
+  font-size: 13px;
+  font-weight: 500;
+  color: #e0e0e0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Play / pause */
+.playBtn {
+  width: 36px;
+  height: 36px;
+  background: #0061fe;
+  border: none;
+  border-radius: 50%;
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+
+.playBtn:hover { background: #0052d6; }
+.playBtn:active { transform: scale(0.94); }
+
+/* Progress row */
+.progressRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 2;
+  min-width: 0;
+}
+
+.timeLabel {
+  font-size: 11px;
+  color: #777;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  width: 34px;
+}
+
+.timeLabel:last-of-type { text-align: right; }
+
+/* Scrubber */
+.scrubber {
+  flex: 1;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 3px;
+  border-radius: 2px;
+  background: linear-gradient(
+    to right,
+    #0061fe var(--pct, 0%),
+    #3a3b3d var(--pct, 0%)
+  );
+  outline: none;
+  cursor: pointer;
+}
+
+.scrubber::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  cursor: pointer;
+  box-shadow: 0 0 0 2px rgba(0, 97, 254, 0.4);
+}
+
+.scrubber::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  cursor: pointer;
+  border: none;
+  box-shadow: 0 0 0 2px rgba(0, 97, 254, 0.4);
+}
+
+/* Close button */
+.closeBtn {
+  background: none;
+  border: none;
+  color: #666;
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  transition: color 0.1s, background 0.1s;
+}
+
+.closeBtn:hover { color: #e0e0e0; background: #3a3b3d; }
+
+/* ── Mobile ── */
+@media (max-width: 640px) {
+  .player {
+    height: auto;
+    flex-wrap: wrap;
+    padding: 10px 14px;
+    gap: 10px;
+    column-gap: 12px;
+  }
+
+  .trackInfo { flex: 1; min-width: 0; }
+  .playBtn { order: 2; }
+  .closeBtn { order: 3; }
+
+  .progressRow {
+    order: 4;
+    flex: 1 0 100%;
+  }
+}

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { listPrefix, getObjectBytes } from '../b2client'
 import { decryptFilename, decryptFileContent } from '../rclone-crypt'
 import FileList from './FileList'
+import AudioPlayer from './AudioPlayer'
 import styles from './FileBrowser.module.css'
 
 export default function FileBrowser({ cryptKeys, onLogout }) {
@@ -15,6 +16,7 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
   const [downloading, setDownloading] = useState('')
   const [view, setView] = useState('grid')
   const [activeNav, setActiveNav] = useState('home')
+  const [audioTrack, setAudioTrack] = useState(null)
   const searchRef = useRef(null)
 
   const load = useCallback(async (p) => {
@@ -68,6 +70,11 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
     setActiveNav('home')
   }
 
+  function closeAudio() {
+    if (audioTrack) URL.revokeObjectURL(audioTrack.url)
+    setAudioTrack(null)
+  }
+
   function handleNavSearch() {
     setActiveNav('search')
     setTimeout(() => searchRef.current?.focus(), 50)
@@ -85,8 +92,12 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
       const isImage = /\.(png|jpe?g|gif|webp|svg)$/i.test(name)
       const isPdf = /\.pdf$/i.test(name)
       const isText = /\.(txt|md|csv|json|log|xml|html?)$/i.test(name)
+      const isAudio = /\.(mp3|m4a|wav|flac|aac|ogg)$/i.test(name)
       if (isImage || isPdf || isText) {
         setPreview({ url, name, blob, isImage, isPdf, isText })
+      } else if (isAudio) {
+        if (audioTrack) URL.revokeObjectURL(audioTrack.url)
+        setAudioTrack({ url, name })
       } else {
         const a = document.createElement('a')
         a.href = url; a.download = name; a.click()
@@ -238,6 +249,10 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
             />
           )}
         </div>
+
+        {audioTrack && (
+          <AudioPlayer track={audioTrack} onClose={closeAudio} />
+        )}
 
         {/* Bottom nav — mobile only */}
         <nav className={styles.bottomNav}>
