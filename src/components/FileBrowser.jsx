@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { listPrefix, listAllObjects, getObjectBytes, deleteObject, putObject, copyAndDelete } from '../b2client'
-import { decryptFilename, decryptFileContent, encryptFilename, encryptFileContent } from '../rclone-crypt'
+import { listPrefix, listAllObjects, getObjectBytes, getMetaObject, deleteObject, putObject, uploadWithProgress, copyAndDelete } from '../b2client'
+import { decryptFilename, decryptFileContent, encryptFilename, encryptFileContent, encryptMeta, decryptMeta } from '../rclone-crypt'
 import { useB2Storage } from '../hooks/useB2Storage'
 import AvatarMenu from './AvatarMenu'
 import FileList from './FileList'
@@ -9,6 +9,8 @@ import VideoPlayer from './VideoPlayer'
 import ContextMenu from './ContextMenu'
 import DetailPanel from './DetailPanel'
 import VersionHistory from './VersionHistory'
+import EmptyState from './EmptyState'
+import FolderPicker from './FolderPicker'
 import styles from './FileBrowser.module.css'
 
 const FILTER_EXTS = {
@@ -84,6 +86,19 @@ export default function FileBrowser({ cryptKeys, keyId, onLogout, onSignOutForge
   const [contextMenu, setContextMenu]   = useState(null)
   const [detailItem, setDetailItem]     = useState(null)
   const [versionItem, setVersionItem]   = useState(null)
+  const [moveItem, setMoveItem]         = useState(null)
+
+  // Drag-and-drop
+  const [isDragging, setIsDragging]     = useState(false)
+
+  // Offline
+  const [isOffline, setIsOffline]       = useState(!navigator.onLine)
+
+  // Persistent search index (loaded from B2 on mount)
+  const [searchIndexBuiltAt, setSearchIndexBuiltAt] = useState(null)
+  const [searchDateFrom, setSearchDateFrom] = useState('')
+  const [searchDateTo, setSearchDateTo]     = useState('')
+  const [searchSizeRange, setSearchSizeRange] = useState('any')
 
   // Persistent — stored as encrypted JSON files in B2 (survive cache clears, work across devices)
   const [starred,      setStarred]      = useB2Storage('starred',      [], dataKey)
@@ -140,6 +155,33 @@ export default function FileBrowser({ cryptKeys, keyId, onLogout, onSignOutForge
     events.forEach(e => window.addEventListener(e, reset, { passive: true }))
     return () => { clearTimeout(timer); events.forEach(e => window.removeEventListener(e, reset)) }
   }, [onLogout, idleMinutes])
+
+  // Online/offline detection
+  useEffect(() => {
+    const onOnline  = () => setIsOffline(false)
+    const onOffline = () => setIsOffline(true)
+    window.addEventListener('online',  onOnline)
+    window.addEventListener('offline', onOffline)
+    return () => { window.removeEventListener('online', onOnline); window.removeEventListener('offline', onOffline) }
+  }, [])
+
+  // Load persistent search index from B2 on mount
+  useEffect(() => {
+    let cancelled = false
+    async function loadIndex() {
+      try {
+        const bytes = await getMetaObject('.b2browser/searchIndex.json')
+        if (cancelled || !bytes) return
+        const data = decryptMeta(bytes, dataKey)
+        if (data?.entries && !cancelled) {
+          setSearchIndex(data.entries)
+          setSearchIndexBuiltAt(data.builtAt || null)
+        }
+      } catch {}
+    }
+    loadIndex()
+    return () => { cancelled = true }
+  }, [dataKey])
 
   // Lock after tab is hidden for 3 minutes (screen lock, app switch)
   useEffect(() => {
@@ -357,7 +399,14 @@ export default function FileBrowser({ cryptKeys, keyId, onLogout, onSignOutForge
         done++
         if (done % 50 === 0) setIndexProgress(Math.round((done / allObjects.length) * 100))
       }
+      const builtAt = Date.now()
       setSearchIndex(index)
+      setSearchIndexBuiltAt(builtAt)
+      // Persist to B2 so it loads instantly next session
+      try {
+        const payload = encryptMeta({ builtAt, entries: index }, dataKey)
+        await putObject('.b2browser/searchIndex.json', payload)
+      } catch {}
     } catch (e) {
       setError('Failed to build search index: ' + e.message)
     } finally {
@@ -368,27 +417,37 @@ export default function FileBrowser({ cryptKeys, keyId, onLogout, onSignOutForge
 
   async function handleUpload(fileList) {
     const files = Array.from(fileList)
+    const existingLabels = new Set((items || []).map(i => i.label))
+
     for (const file of files) {
-      setUploads(prev => [...prev, { name: file.name, status: 'encrypting' }])
+      // Duplicate detection
+      if (existingLabels.has(file.name)) {
+        if (!window.confirm(`"${file.name}" already exists in this folder. Overwrite?`)) continue
+      }
+
+      setUploads(prev => [...prev, { name: file.name, status: 'encrypting', progress: 0, speed: '' }])
       try {
-        const buf = await file.arrayBuffer()
+        const buf   = await file.arrayBuffer()
         const plain = new Uint8Array(buf)
-        const enc = encryptFileContent(plain, dataKey)
+        const enc   = encryptFileContent(plain, dataKey)
+
         setUploads(prev => prev.map(u => u.name === file.name ? { ...u, status: 'uploading' } : u))
+
         const encName = await encryptFilename(file.name, nameKey, nameTweak)
-        const key = prefix + encName
-        await putObject(key, enc)
-        const newItem = {
-          key,
-          label: file.name,
-          size: file.size,
-          lastModified: new Date(),
-          isFolder: false,
-        }
+        const key     = prefix + encName
+
+        await uploadWithProgress(key, enc, ({ percent, speedMBs }) => {
+          setUploads(prev => prev.map(u =>
+            u.name === file.name ? { ...u, progress: percent, speed: speedMBs + ' MB/s' } : u
+          ))
+        })
+
+        const newItem = { key, label: file.name, size: file.size, lastModified: new Date(), isFolder: false }
         setItems(prev => prev ? [...prev, newItem] : [newItem])
+        existingLabels.add(file.name)
         setUploads(prev => prev.filter(u => u.name !== file.name))
       } catch (e) {
-        setUploads(prev => prev.map(u => u.name === file.name ? { ...u, status: 'error: ' + e.message } : u))
+        setUploads(prev => prev.map(u => u.name === file.name ? { ...u, status: 'error', speed: e.message } : u))
         setTimeout(() => setUploads(prev => prev.filter(u => u.name !== file.name)), 4000)
       }
     }
@@ -421,6 +480,110 @@ export default function FileBrowser({ cryptKeys, keyId, onLogout, onSignOutForge
     setFolderColors({})
   }
 
+  async function handleNewFolder() {
+    const name = window.prompt('Folder name:')
+    if (!name?.trim()) return
+    const trimmed = name.trim()
+    try {
+      const encFolder = await encryptFilename(trimmed, nameKey, nameTweak)
+      const encKeep   = await encryptFilename('.keep', nameKey, nameTweak)
+      const folderPrefix = prefix + encFolder + '/'
+      const keepKey      = folderPrefix + encKeep
+      await putObject(keepKey, encryptFileContent(new Uint8Array(0), dataKey))
+      setItems(prev => prev ? [{ encPrefix: folderPrefix, label: trimmed, isFolder: true }, ...prev] : [{ encPrefix: folderPrefix, label: trimmed, isFolder: true }])
+    } catch (e) {
+      setError('Failed to create folder: ' + e.message)
+    }
+  }
+
+  async function handleMove(item, destPrefix) {
+    const filename = item.key.slice(item.key.lastIndexOf('/') + 1)
+    const newKey   = destPrefix + filename
+    if (newKey === item.key) { setMoveItem(null); return }
+    try {
+      await copyAndDelete(item.key, newKey)
+      setItems(prev => prev ? prev.filter(i => i.key !== item.key) : prev)
+      setStarred(prev => prev.map(i => i.key === item.key ? { ...i, key: newKey } : i))
+    } catch (e) {
+      setError('Move failed: ' + e.message)
+    } finally {
+      setMoveItem(null)
+    }
+  }
+
+  async function handleShare(item) {
+    if (!navigator.share) return
+    setDownloading(item.key)
+    try {
+      const buf   = await getObjectBytes(item.key)
+      const plain = decryptFileContent(buf, dataKey)
+      const file  = new File([plain], item.label, { type: 'application/octet-stream' })
+      if (navigator.canShare?.({ files: [file] })) {
+        await navigator.share({ files: [file], title: item.label })
+      } else {
+        await navigator.share({ title: item.label })
+      }
+    } catch (e) {
+      if (e.name !== 'AbortError') setError('Share failed: ' + e.message)
+    } finally {
+      setDownloading('')
+    }
+  }
+
+  // Thumbnail getter — decrypts image files for grid preview
+  const thumbCache = useRef(new Map())
+  const getThumbnail = useCallback(async (item) => {
+    if (thumbCache.current.has(item.key)) return thumbCache.current.get(item.key)
+    try {
+      const buf   = await getObjectBytes(item.key)
+      const plain = decryptFileContent(buf, dataKey)
+      const url   = URL.createObjectURL(new Blob([plain]))
+      thumbCache.current.set(item.key, url)
+      return url
+    } catch { return null }
+  }, [dataKey])
+
+  // Drag & drop
+  function onDragOver(e) { e.preventDefault(); setIsDragging(true) }
+  function onDragLeave(e) { if (!e.currentTarget.contains(e.relatedTarget)) setIsDragging(false) }
+  function onDrop(e) {
+    e.preventDefault()
+    setIsDragging(false)
+    if (activeSection === 'home' && e.dataTransfer.files.length) {
+      handleUpload(e.dataTransfer.files)
+    }
+  }
+
+  // Search date/size filters applied to the index
+  function applySearchFilters(entries) {
+    let out = entries
+    if (searchDateFrom) out = out.filter(i => i.lastModified && new Date(i.lastModified) >= new Date(searchDateFrom))
+    if (searchDateTo)   out = out.filter(i => i.lastModified && new Date(i.lastModified) <= new Date(searchDateTo + 'T23:59:59'))
+    if (searchSizeRange !== 'any') {
+      const [minMB, maxMB] = {
+        'tiny':  [0,    1],
+        'small': [1,    100],
+        'large': [100,  1000],
+        'huge':  [1000, Infinity],
+      }[searchSizeRange] || [0, Infinity]
+      out = out.filter(i => {
+        const mb = (i.size || 0) / 1024 / 1024
+        return mb >= minMB && mb < maxMB
+      })
+    }
+    return out
+  }
+
+  function fmtIndexAge(builtAt) {
+    if (!builtAt) return ''
+    const mins = Math.round((Date.now() - builtAt) / 60000)
+    if (mins < 1)  return 'just now'
+    if (mins < 60) return `${mins}m ago`
+    const hrs = Math.round(mins / 60)
+    if (hrs < 24)  return `${hrs}h ago`
+    return `${Math.round(hrs / 24)}d ago`
+  }
+
   function cycleSort(field) {
     setSort(prev => {
       if (prev.field !== field) return { field, dir: 'asc' }
@@ -438,7 +601,7 @@ export default function FileBrowser({ cryptKeys, keyId, onLogout, onSignOutForge
     activeSection === 'trash'   ? trash :
     activeSection === 'starred' ? starred :
     activeSection === 'recent'  ? recent :
-    (activeSection === 'search' && searchIndex) ? searchIndex.filter(i => !trashIds.has(itemId(i))) :
+    (activeSection === 'search' && searchIndex) ? applySearchFilters(searchIndex.filter(i => !trashIds.has(itemId(i)))) :
     (items || []).filter(i => !trashIds.has(itemId(i)))
 
   if (search) {
@@ -576,6 +739,16 @@ export default function FileBrowser({ cryptKeys, keyId, onLogout, onSignOutForge
       {/* ── Main ── */}
       <div className={styles.main}>
 
+        {/* Offline banner */}
+        {isOffline && (
+          <div className={styles.offlineBanner}>
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2">
+              <line x1="1" y1="1" x2="23" y2="23"/><path d="M16.72 11.06A10.94 10.94 0 0119 12.55M5 12.55a10.94 10.94 0 015.17-2.39M10.71 5.05A16 16 0 0122.56 9M1.42 9a15.91 15.91 0 014.7-2.88M8.53 16.11a6 6 0 016.95 0M12 20h.01"/>
+            </svg>
+            You're offline — uploads will resume when you reconnect
+          </div>
+        )}
+
         {/* Top bar */}
         <div className={styles.topbar}>
           <div className={styles.searchWrap}>
@@ -602,8 +775,22 @@ export default function FileBrowser({ cryptKeys, keyId, onLogout, onSignOutForge
           />
         </div>
 
-        {/* Content */}
-        <div className={styles.content}>
+        {/* Content — drag-and-drop target */}
+        <div
+          className={styles.content + (isDragging ? ' ' + styles.dropTarget : '')}
+          onDragOver={onDragOver}
+          onDragLeave={onDragLeave}
+          onDrop={onDrop}
+        >
+          {isDragging && activeSection === 'home' && (
+            <div className={styles.dropOverlay}>
+              <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+              </svg>
+              Drop files to upload
+            </div>
+          )}
 
           {/* Breadcrumb */}
           {activeSection === 'home' && breadcrumb.length > 0 && (
@@ -637,6 +824,13 @@ export default function FileBrowser({ cryptKeys, keyId, onLogout, onSignOutForge
                   style={{ display: 'none' }}
                   onChange={e => { handleUpload(e.target.files); e.target.value = '' }}
                 />
+                <button className={styles.newFolderBtn} onClick={handleNewFolder} title="New folder">
+                  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>
+                    <line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/>
+                  </svg>
+                  New Folder
+                </button>
                 <button className={styles.uploadBtn} onClick={() => uploadRef.current?.click()}>
                   <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2.5">
                     <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
@@ -707,31 +901,59 @@ export default function FileBrowser({ cryptKeys, keyId, onLogout, onSignOutForge
             </div>
           )}
 
-          {/* Search index prompt */}
+          {/* Search index bar */}
           {activeSection === 'search' && (
-            <div className={styles.indexBar}>
-              {searchIndex === null && !searchIndexing && (
-                <>
-                  <span className={styles.indexHint}>Build an index to search across all files in your backup.</span>
-                  <button className={styles.indexBtn} onClick={buildSearchIndex}>Build search index</button>
-                </>
-              )}
-              {searchIndexing && (
-                <>
-                  <span className={styles.spinner} />
-                  <span className={styles.indexHint}>Indexing… {indexProgress}%</span>
-                </>
-              )}
+            <>
+              <div className={styles.indexBar}>
+                {searchIndex === null && !searchIndexing && (
+                  <>
+                    <span className={styles.indexHint}>Build an index to search across all files in your backup.</span>
+                    <button className={styles.indexBtn} onClick={buildSearchIndex}>Build index</button>
+                  </>
+                )}
+                {searchIndexing && (
+                  <>
+                    <span className={styles.spinner} />
+                    <span className={styles.indexHint}>Indexing… {indexProgress}%</span>
+                  </>
+                )}
+                {searchIndex && !searchIndexing && (
+                  <>
+                    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="#22c55e" strokeWidth="2.5">
+                      <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                    <span className={styles.indexHint}>
+                      {searchIndex.length} files indexed
+                      {searchIndexBuiltAt && ` · ${fmtIndexAge(searchIndexBuiltAt)}`}
+                    </span>
+                    <button className={styles.indexBtn} onClick={buildSearchIndex}>Refresh</button>
+                  </>
+                )}
+              </div>
               {searchIndex && (
-                <>
-                  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="#22c55e" strokeWidth="2.5">
-                    <polyline points="20 6 9 17 4 12"/>
-                  </svg>
-                  <span className={styles.indexHint}>{searchIndex.length} files indexed</span>
-                  <button className={styles.indexBtn} onClick={buildSearchIndex}>Refresh</button>
-                </>
+                <div className={styles.searchFilters}>
+                  <span className={styles.filterLabel}>From</span>
+                  <input type="date" className={styles.dateInput} value={searchDateFrom}
+                    onChange={e => setSearchDateFrom(e.target.value)} />
+                  <span className={styles.filterLabel}>To</span>
+                  <input type="date" className={styles.dateInput} value={searchDateTo}
+                    onChange={e => setSearchDateTo(e.target.value)} />
+                  <select className={styles.sizeSelect} value={searchSizeRange}
+                    onChange={e => setSearchSizeRange(e.target.value)}>
+                    <option value="any">Any size</option>
+                    <option value="tiny">Under 1 MB</option>
+                    <option value="small">1 – 100 MB</option>
+                    <option value="large">100 MB – 1 GB</option>
+                    <option value="huge">Over 1 GB</option>
+                  </select>
+                  {(searchDateFrom || searchDateTo || searchSizeRange !== 'any') && (
+                    <button className={styles.indexBtn} onClick={() => {
+                      setSearchDateFrom(''); setSearchDateTo(''); setSearchSizeRange('any')
+                    }}>Clear filters</button>
+                  )}
+                </div>
               )}
-            </div>
+            </>
           )}
 
           {/* Bulk action bar */}
@@ -749,10 +971,23 @@ export default function FileBrowser({ cryptKeys, keyId, onLogout, onSignOutForge
             <div className={styles.uploadList}>
               {uploads.map(u => (
                 <div key={u.name} className={styles.uploadItem}>
-                  <span className={styles.uploadName}>{u.name}</span>
-                  <span className={styles.uploadStatus}>{u.status}</span>
-                  {(u.status === 'encrypting' || u.status === 'uploading') && (
-                    <span className={styles.spinner} style={{ width: 12, height: 12 }} />
+                  <div className={styles.uploadRow}>
+                    <span className={styles.uploadName}>{u.name}</span>
+                    <span className={styles.uploadStatus}>
+                      {u.status === 'uploading'
+                        ? `${u.progress || 0}% · ${u.speed || ''}`
+                        : u.status === 'error'
+                        ? `Error: ${u.speed}`
+                        : u.status}
+                    </span>
+                    {(u.status === 'encrypting' || u.status === 'uploading') && (
+                      <span className={styles.spinner} style={{ width: 12, height: 12 }} />
+                    )}
+                  </div>
+                  {u.status === 'uploading' && (
+                    <div className={styles.progressBar}>
+                      <div className={styles.progressFill} style={{ width: `${u.progress || 0}%` }} />
+                    </div>
                   )}
                 </div>
               ))}
@@ -791,6 +1026,15 @@ export default function FileBrowser({ cryptKeys, keyId, onLogout, onSignOutForge
               onContextMenu={handleContextMenu}
               starredIds={starredIds}
               folderColors={folderColors}
+              emptySection={
+                activeSection === 'starred' ? 'starred' :
+                activeSection === 'recent'  ? 'recent'  :
+                activeSection === 'search' && searchIndex ? 'searchReady' :
+                activeSection === 'search' ? 'search' : 'home'
+              }
+              getThumbnail={getThumbnail}
+              onDelete={handleDelete}
+              onStar={toggleStar}
             />
           )}
         </div>
@@ -865,6 +1109,21 @@ export default function FileBrowser({ cryptKeys, keyId, onLogout, onSignOutForge
           onVersions={() => setVersionItem(contextMenu.item)}
           onDelete={() => handleDelete(contextMenu.item)}
           onSetColor={colorId => setFolderColors(prev => ({ ...prev, [contextMenu.item.encPrefix]: colorId }))}
+          onMove={() => setMoveItem(contextMenu.item)}
+          onShare={() => handleShare(contextMenu.item)}
+        />
+      )}
+
+      {/* ── Move to… folder picker ── */}
+      {moveItem && (
+        <FolderPicker
+          nameKey={nameKey}
+          nameTweak={nameTweak}
+          excludePrefix={moveItem.key.includes('/')
+            ? moveItem.key.slice(0, moveItem.key.lastIndexOf('/') + 1)
+            : ''}
+          onSelect={destPrefix => handleMove(moveItem, destPrefix)}
+          onClose={() => setMoveItem(null)}
         />
       )}
 

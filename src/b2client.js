@@ -3,6 +3,7 @@ import {
   DeleteObjectCommand, PutObjectCommand, CopyObjectCommand,
   ListObjectVersionsCommand, GetBucketVersioningCommand, PutBucketVersioningCommand,
 } from '@aws-sdk/client-s3'
+import { Upload } from '@aws-sdk/lib-storage'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 
 const BUCKET = 'moriah-backup'
@@ -88,6 +89,22 @@ export async function deleteObject(key) {
 export async function putObject(key, data) {
   const cmd = new PutObjectCommand({ Bucket: BUCKET, Key: key, Body: data })
   await getClient().send(cmd)
+}
+
+// Like putObject but fires onProgress({ loaded, total, percent, speedMBs }) during upload
+export async function uploadWithProgress(key, data, onProgress) {
+  const upload = new Upload({
+    client: getClient(),
+    params: { Bucket: BUCKET, Key: key, Body: data },
+  })
+  const startTime = Date.now()
+  upload.on('httpUploadProgress', ({ loaded, total }) => {
+    const elapsed = (Date.now() - startTime) / 1000 || 0.001
+    const percent  = total ? Math.round((loaded / total) * 100) : 0
+    const speedMBs = (loaded / 1024 / 1024 / elapsed).toFixed(1)
+    onProgress({ loaded, total, percent, speedMBs })
+  })
+  await upload.done()
 }
 
 export async function copyAndDelete(srcKey, dstKey) {

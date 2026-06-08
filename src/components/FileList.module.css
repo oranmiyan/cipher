@@ -140,6 +140,38 @@
 .busy { opacity: 0.4; pointer-events: none; }
 .empty { color: #555; padding: 60px 20px; text-align: center; font-size: 14px; }
 
+/* ── Swipe-to-reveal (mobile list view) ── */
+.swipeContainer {
+  position: relative;
+  overflow: hidden;
+}
+
+.swipeContent { position: relative; z-index: 1; }
+
+.swipeActions {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: stretch;
+  z-index: 0;
+}
+
+.swipeBtn {
+  border: none;
+  cursor: pointer;
+  font-size: 18px;
+  width: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.1s;
+}
+
+.swipeStar   { background: #1a3a5c; }
+.swipeDelete { background: rgba(220,38,38,0.3); }
+
 /* Mobile: 2-col grid */
 @media (max-width: 640px) {
   .grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
