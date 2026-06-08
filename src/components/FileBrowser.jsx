@@ -599,7 +599,6 @@ export default function FileBrowser({ cryptKeys, keyId, onLogout, onSignOutForge
             onViewChange={setView}
             onLock={onLogout}
             onSignOutForget={onSignOutForget}
-            onClearMeta={handleClearMeta}
           />
         </div>
 
