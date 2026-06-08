@@ -80,3 +80,21 @@ export async function deleteObject(key) {
   const cmd = new DeleteObjectCommand({ Bucket: BUCKET, Key: key })
   await getClient().send(cmd)
 }
+
+export async function listAllObjects(prefix = '') {
+  const allFiles = []
+  let continuationToken = undefined
+  do {
+    const cmd = new ListObjectsV2Command({
+      Bucket: BUCKET,
+      Prefix: prefix,
+      ContinuationToken: continuationToken,
+    })
+    const resp = await getClient().send(cmd)
+    for (const obj of (resp.Contents || [])) {
+      allFiles.push({ key: obj.Key, size: obj.Size, lastModified: obj.LastModified })
+    }
+    continuationToken = resp.NextContinuationToken
+  } while (continuationToken)
+  return allFiles
+}

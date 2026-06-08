@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { listPrefix, getObjectBytes, deleteObject } from '../b2client'
+import { listPrefix, listAllObjects, getObjectBytes, deleteObject } from '../b2client'
 import { decryptFilename, decryptFileContent } from '../rclone-crypt'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import FileList from './FileList'
@@ -16,8 +16,8 @@ const FILTER_EXTS = {
   docs:     ['pdf','doc','docx','xls','xlsx','ppt','pptx','txt','md','csv'],
   archives: ['zip','gz','tar','7z','rar'],
 }
-const FILTERS      = ['all','folders','images','videos','audio','docs','archives']
-const SORT_FIELDS  = [{ field: 'name', label: 'Name' }, { field: 'size', label: 'Size' }, { field: 'date', label: 'Date' }]
+const FILTERS     = ['all','folders','images','videos','audio','docs','archives']
+const SORT_FIELDS = [{ field: 'name', label: 'Name' }, { field: 'size', label: 'Size' }, { field: 'date', label: 'Date' }]
 
 const itemId = item => item.isFolder ? item.encPrefix : item.key
 
@@ -33,14 +33,30 @@ function sortItems(arr, { field, dir }) {
   })
 }
 
+function fmtSize(bytes) {
+  if (!bytes) return '—'
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB'
+  if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' MB'
+  return (bytes / 1073741824).toFixed(2) + ' GB'
+}
+
+function fmtDate(d) {
+  if (!d) return '—'
+  return new Date(d).toLocaleDateString(undefined, {
+    year: 'numeric', month: 'short', day: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  })
+}
+
 export default function FileBrowser({ cryptKeys, onLogout }) {
   const { nameKey, nameTweak, dataKey } = cryptKeys
 
   // Navigation
-  const [prefix, setPrefix]       = useState('')
-  const [breadcrumb, setBreadcrumb] = useState([])
-  const [items, setItems]         = useState(null)
-  const [error, setError]         = useState('')
+  const [prefix, setPrefix]           = useState('')
+  const [breadcrumb, setBreadcrumb]   = useState([])
+  const [items, setItems]             = useState(null)
+  const [error, setError]             = useState('')
   const [activeSection, setActiveSection] = useState('home')
 
   // UI
@@ -50,23 +66,30 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
   const [filter, setFilter]   = useState('all')
 
   // Media
-  const [audioTrack, setAudioTrack] = useState(null)
-  const [videoTrack, setVideoTrack] = useState(null)
+  const [audioTrack, setAudioTrack]   = useState(null)
+  const [videoTrack, setVideoTrack]   = useState(null)
   const [downloading, setDownloading] = useState('')
 
   // Selection & overlays
-  const [selected, setSelected]     = useState(new Set())
-  const [preview, setPreview]       = useState(null)
-  const [contextMenu, setContextMenu] = useState(null)
-  const [detailItem, setDetailItem] = useState(null)
+  const [selected, setSelected]         = useState(new Set())
+  const [preview, setPreview]           = useState(null)
+  const [contextMenu, setContextMenu]   = useState(null)
+  const [detailItem, setDetailItem]     = useState(null)
 
   // Persistent
   const [starred, setStarred]           = useLocalStorage('b2-browser.starred', [])
   const [recent, setRecent]             = useLocalStorage('b2-browser.recent', [])
   const [folderColors, setFolderColors] = useLocalStorage('b2-browser.folderColors', {})
+  const [trash, setTrash]               = useLocalStorage('b2-browser.trash', [])
+
+  // Global search index
+  const [searchIndex, setSearchIndex]     = useState(null)
+  const [searchIndexing, setSearchIndexing] = useState(false)
+  const [indexProgress, setIndexProgress]   = useState(0)
 
   const searchRef  = useRef(null)
   const starredIds = new Set(starred.map(i => itemId(i)))
+  const trashIds   = new Set(trash.map(i => itemId(i)))
 
   const load = useCallback(async (p) => {
     setItems(null)
@@ -218,17 +241,54 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
     })
   }
 
-  async function handleDelete(item) {
+  // Soft delete — moves to trash (no B2 deletion)
+  function handleDelete(item) {
     if (item.isFolder) { setError('Folder deletion not yet supported.'); return }
-    if (!window.confirm(`Delete "${item.label}"? This cannot be undone.`)) return
+    const id = itemId(item)
+    setTrash(prev => prev.some(i => itemId(i) === id) ? prev : [...prev, { ...item, deletedAt: Date.now() }])
+    setItems(prev => prev ? prev.filter(i => itemId(i) !== id) : prev)
+    setSelected(prev => { const n = new Set(prev); n.delete(id); return n })
+    setStarred(prev => prev.filter(i => itemId(i) !== id))
+    setRecent(prev => prev.filter(i => itemId(i) !== id))
+    if (detailItem && itemId(detailItem) === id) setDetailItem(null)
+  }
+
+  // Permanent delete from trash
+  async function handleDeleteForever(item) {
+    if (!window.confirm(`Permanently delete "${item.label}"? This cannot be undone.`)) return
     try {
       await deleteObject(item.key)
-      setItems(prev => prev ? prev.filter(i => i.key !== item.key) : prev)
-      setSelected(prev => { const n = new Set(prev); n.delete(item.key); return n })
-      if (detailItem && itemId(detailItem) === item.key) setDetailItem(null)
+      setTrash(prev => prev.filter(i => itemId(i) !== itemId(item)))
     } catch (e) {
       setError('Delete failed: ' + e.message)
     }
+  }
+
+  function handleRestore(item) {
+    setTrash(prev => prev.filter(i => itemId(i) !== itemId(item)))
+  }
+
+  async function handleEmptyTrash() {
+    if (!trash.length) return
+    if (!window.confirm(`Permanently delete all ${trash.length} item(s) in trash? This cannot be undone.`)) return
+    for (const item of trash) {
+      if (!item.isFolder) {
+        try { await deleteObject(item.key) } catch {}
+      }
+    }
+    setTrash([])
+  }
+
+  function bulkDelete() {
+    const toTrash = displayedAll.filter(i => !i.isFolder && selected.has(itemId(i)))
+    if (!toTrash.length) return
+    const now = Date.now()
+    setTrash(prev => {
+      const newItems = toTrash.filter(t => !prev.some(p => itemId(p) === itemId(t)))
+      return [...prev, ...newItems.map(i => ({ ...i, deletedAt: now }))]
+    })
+    setItems(prev => prev ? prev.filter(i => !selected.has(itemId(i))) : prev)
+    setSelected(new Set())
   }
 
   async function bulkDownload() {
@@ -236,15 +296,34 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
     for (const item of toDownload) await downloadFile(item)
   }
 
-  async function bulkDelete() {
-    const toDelete = displayedAll.filter(i => !i.isFolder && selected.has(itemId(i)))
-    if (!toDelete.length) return
-    if (!window.confirm(`Delete ${toDelete.length} file(s)? This cannot be undone.`)) return
-    for (const item of toDelete) {
-      try { await deleteObject(item.key) } catch {}
+  async function buildSearchIndex() {
+    setSearchIndexing(true)
+    setIndexProgress(0)
+    try {
+      const allObjects = await listAllObjects()
+      const index = []
+      let done = 0
+      for (const obj of allObjects) {
+        const parts = obj.key.split('/').filter(Boolean)
+        const decParts = []
+        for (const part of parts) {
+          let dec = part
+          try { dec = await decryptFilename(part, nameKey, nameTweak) } catch {}
+          decParts.push(dec)
+        }
+        const label = decParts[decParts.length - 1] || obj.key
+        const path  = decParts.slice(0, -1).join('/')
+        index.push({ key: obj.key, label, path, size: obj.size, lastModified: obj.lastModified, isFolder: false })
+        done++
+        if (done % 50 === 0) setIndexProgress(Math.round((done / allObjects.length) * 100))
+      }
+      setSearchIndex(index)
+    } catch (e) {
+      setError('Failed to build search index: ' + e.message)
+    } finally {
+      setSearchIndexing(false)
+      setIndexProgress(100)
     }
-    setItems(prev => prev ? prev.filter(i => !selected.has(itemId(i))) : prev)
-    setSelected(new Set())
   }
 
   function cycleSort(field) {
@@ -260,14 +339,18 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
   }
 
   // Compute display items
-  let displayItems = activeSection === 'starred'
-    ? starred
-    : activeSection === 'recent'
-      ? recent
-      : (items || [])
+  let displayItems =
+    activeSection === 'trash'   ? trash :
+    activeSection === 'starred' ? starred :
+    activeSection === 'recent'  ? recent :
+    (activeSection === 'search' && searchIndex) ? searchIndex.filter(i => !trashIds.has(itemId(i))) :
+    (items || []).filter(i => !trashIds.has(itemId(i)))
 
   if (search) {
-    displayItems = displayItems.filter(i => i.label.toLowerCase().includes(search.toLowerCase()))
+    displayItems = displayItems.filter(i =>
+      i.label.toLowerCase().includes(search.toLowerCase()) ||
+      (i.path && i.path.toLowerCase().includes(search.toLowerCase()))
+    )
   }
 
   if ((activeSection === 'home' || activeSection === 'search') && filter !== 'all') {
@@ -282,19 +365,23 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
     }
   }
 
-  const folders      = sortItems(displayItems.filter(i => i.isFolder), sort)
-  const files        = sortItems(displayItems.filter(i => !i.isFolder), sort)
+  const folders      = activeSection === 'trash' ? [] : sortItems(displayItems.filter(i => i.isFolder), sort)
+  const files        = activeSection === 'trash'
+    ? displayItems
+    : sortItems(displayItems.filter(i => !i.isFolder), sort)
   const displayedAll = [...folders, ...files]
 
-  const currentTitle = activeSection === 'starred'
-    ? 'Starred'
-    : activeSection === 'recent'
-      ? 'Recent'
-      : breadcrumb.length > 0
-        ? breadcrumb[breadcrumb.length - 1].label
-        : 'Home'
+  const currentTitle =
+    activeSection === 'starred' ? 'Starred' :
+    activeSection === 'recent'  ? 'Recent'  :
+    activeSection === 'trash'   ? 'Trash'   :
+    breadcrumb.length > 0 ? breadcrumb[breadcrumb.length - 1].label : 'Home'
 
   const showControlBar = activeSection === 'home' || activeSection === 'search'
+
+  const storageEstimate = searchIndex
+    ? searchIndex.reduce((s, i) => s + (i.size || 0), 0)
+    : (items || []).filter(i => !i.isFolder).reduce((s, i) => s + (i.size || 0), 0)
 
   return (
     <div className={styles.shell}>
@@ -353,9 +440,34 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
             </svg>
             Search
           </button>
+          <button
+            className={styles.navItem + (activeSection === 'trash' ? ' ' + styles.navActive : '')}
+            onClick={() => { setActiveSection('trash'); setSearch('') }}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <polyline points="3 6 5 6 21 6"/>
+              <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/>
+              <path d="M10 11v6M14 11v6"/>
+              <path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/>
+            </svg>
+            Trash
+            {trash.length > 0 && <span className={styles.trashBadge}>{trash.length}</span>}
+          </button>
         </div>
 
         <div className={styles.sidebarSpacer} />
+
+        {/* Storage estimate */}
+        <div className={styles.storageBar}>
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2">
+            <ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/>
+            <path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/>
+          </svg>
+          <span>
+            {fmtSize(storageEstimate)}
+            {searchIndex ? ` · ${searchIndex.length} files` : ' (current folder)'}
+          </span>
+        </div>
 
         <button className={styles.lockBtn} onClick={onLogout}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -408,30 +520,37 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
           {/* Toolbar */}
           <div className={styles.toolbar}>
             <h2 className={styles.folderTitle}>{currentTitle}</h2>
-            <div className={styles.viewToggle}>
-              <button
-                className={styles.viewBtn + (view === 'grid' ? ' ' + styles.viewActive : '')}
-                onClick={() => setView('grid')} title="Grid view"
-              >
-                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2">
-                  <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
-                  <rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
-                </svg>
+            {activeSection === 'trash' && trash.length > 0 && (
+              <button className={styles.emptyTrashBtn} onClick={handleEmptyTrash}>
+                Empty trash
               </button>
-              <button
-                className={styles.viewBtn + (view === 'list' ? ' ' + styles.viewActive : '')}
-                onClick={() => setView('list')} title="List view"
-              >
-                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2">
-                  <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/>
-                  <line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/>
-                  <line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
-                </svg>
-              </button>
-            </div>
+            )}
+            {activeSection !== 'trash' && (
+              <div className={styles.viewToggle}>
+                <button
+                  className={styles.viewBtn + (view === 'grid' ? ' ' + styles.viewActive : '')}
+                  onClick={() => setView('grid')} title="Grid view"
+                >
+                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2">
+                    <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+                    <rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
+                  </svg>
+                </button>
+                <button
+                  className={styles.viewBtn + (view === 'list' ? ' ' + styles.viewActive : '')}
+                  onClick={() => setView('list')} title="List view"
+                >
+                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2">
+                    <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/>
+                    <line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/>
+                    <line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
+                  </svg>
+                </button>
+              </div>
+            )}
           </div>
 
-          {/* Control bar: filter chips + sort */}
+          {/* Control bar */}
           {showControlBar && (
             <div className={styles.controlBar}>
               <div className={styles.filterChips}>
@@ -466,18 +585,46 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
             </div>
           )}
 
+          {/* Search index prompt */}
+          {activeSection === 'search' && (
+            <div className={styles.indexBar}>
+              {searchIndex === null && !searchIndexing && (
+                <>
+                  <span className={styles.indexHint}>Build an index to search across all files in your backup.</span>
+                  <button className={styles.indexBtn} onClick={buildSearchIndex}>Build search index</button>
+                </>
+              )}
+              {searchIndexing && (
+                <>
+                  <span className={styles.spinner} />
+                  <span className={styles.indexHint}>Indexing… {indexProgress}%</span>
+                </>
+              )}
+              {searchIndex && (
+                <>
+                  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="#22c55e" strokeWidth="2.5">
+                    <polyline points="20 6 9 17 4 12"/>
+                  </svg>
+                  <span className={styles.indexHint}>{searchIndex.length} files indexed</span>
+                  <button className={styles.indexBtn} onClick={buildSearchIndex}>Refresh</button>
+                </>
+              )}
+            </div>
+          )}
+
           {/* Bulk action bar */}
           {selected.size > 0 && (
             <div className={styles.bulkBar}>
               <span className={styles.bulkCount}>{selected.size} selected</span>
               <button className={styles.bulkBtn} onClick={bulkDownload}>Download</button>
-              <button className={styles.bulkBtn + ' ' + styles.bulkDanger} onClick={bulkDelete}>Delete</button>
+              <button className={styles.bulkBtn + ' ' + styles.bulkDanger} onClick={bulkDelete}>Move to trash</button>
               <button className={styles.bulkBtn} onClick={() => setSelected(new Set())}>Deselect all</button>
             </div>
           )}
 
           {error && <p className={styles.error}>{error}</p>}
 
+          {/* Loading state */}
           {activeSection === 'home' && items === null && !error && (
             <div className={styles.loading}>
               <span className={styles.spinner}/>
@@ -485,7 +632,17 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
             </div>
           )}
 
-          {(activeSection !== 'home' || items !== null) && (
+          {/* Trash view */}
+          {activeSection === 'trash' && (
+            <TrashList
+              items={displayItems}
+              onRestore={handleRestore}
+              onDeleteForever={handleDeleteForever}
+            />
+          )}
+
+          {/* File list */}
+          {activeSection !== 'trash' && (activeSection !== 'home' || items !== null) && (
             <FileList
               folders={folders}
               files={files}
@@ -602,8 +759,46 @@ export default function FileBrowser({ cryptKeys, onLogout }) {
   )
 }
 
+function TrashList({ items, onRestore, onDeleteForever }) {
+  if (!items.length) {
+    return <p style={{ color: '#555', padding: '60px 20px', textAlign: 'center', fontSize: '14px' }}>Trash is empty.</p>
+  }
+  return (
+    <div>
+      {items.map(item => (
+        <div key={itemId(item)} style={{
+          display: 'flex', alignItems: 'center', gap: '10px',
+          padding: '9px 12px', borderRadius: '8px', borderBottom: '1px solid #2a2b2d'
+        }}>
+          <span style={{ fontSize: '20px', flexShrink: 0 }}>{item.isFolder ? '📁' : '📄'}</span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: '14px', color: '#e0e0e0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {item.label}
+            </div>
+            <div style={{ fontSize: '11px', color: '#555' }}>
+              Deleted {fmtDate(item.deletedAt)}
+            </div>
+          </div>
+          <button
+            onClick={() => onRestore(item)}
+            style={{ padding: '5px 10px', background: '#3a3b3d', border: 'none', borderRadius: '6px', color: '#e0e0e0', cursor: 'pointer', fontSize: '12px', flexShrink: 0 }}
+          >
+            Restore
+          </button>
+          <button
+            onClick={() => onDeleteForever(item)}
+            style={{ padding: '5px 10px', background: 'none', border: '1px solid #3a3b3d', borderRadius: '6px', color: '#f87171', cursor: 'pointer', fontSize: '12px', flexShrink: 0 }}
+          >
+            Delete forever
+          </button>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function TextViewer({ blob }) {
   const [text, setText] = useState('')
   useEffect(() => { blob.text().then(setText) }, [blob])
-  return <pre className={styles.previewText}>{text}</pre>
+  return <pre style={{ color: '#ccc', fontSize: '13px', overflow: 'auto', padding: '16px', whiteSpace: 'pre-wrap', maxHeight: '75dvh' }}>{text}</pre>
 }
