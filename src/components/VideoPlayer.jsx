@@ -93,8 +93,9 @@ export default function VideoPlayer({ track, dataKey, onClose }) {
             return
           }
 
-          // Append initialisation segments, then start segmentation
-          for (const seg of mp4.initializeSegmentation()) seg.user?.push(seg.buffer)
+          // mp4box v2.x returns { tracks, buffer } (single shared init segment)
+          const initSeg = mp4.initializeSegmentation()
+          for (const track of initSeg.tracks) track.user?.push(initSeg.buffer)
           mp4.start()
           setStatus('playing')
         }
